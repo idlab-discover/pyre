@@ -109,8 +109,12 @@ Tree accumulation order is unchanged. Calls finish before returning their arrays
 and simultaneous callers may share a forest with independently owned outputs.
 Do not mutate the input or private model fields while prediction is running.
 
-The MAX process pool is reused. A per-call limit does not reserve cores or resize
-the pool; simultaneous calls share its resources. Set process affinity before
+The MAX process pool is reused. Each forest also lazily caches one CPU execution
+context for repeated threaded predictions. A call acquires the cache without
+waiting; overlapping or nested calls use independent temporary contexts. The
+cached context is released with the forest. Serial calls do not create a context.
+A per-call limit does not reserve cores or resize the pool; simultaneous calls
+share its resources. Set process affinity before
 runtime initialization to constrain available CPUs. Pyre initializes the runtime
 before parallel execution, including when used from a non-Mojo host. The existing
 `max-core==26.5.0` dependency supplies `max.algorithm`; no Python model-serving

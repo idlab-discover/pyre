@@ -4,7 +4,38 @@ Verified with Mojo 1.0.0 and `max-core==26.5.0` on 2026-09-11.
 The existing `max-core` dependency supplies `max.algorithm`; installing the
 Python MAX serving package is unnecessary.
 
-## API and captures
+## Context lifetime in Pyre
+
+Pyre now retains one CPU `DeviceContext` per forest after its first threaded
+prediction. The cache has an atomic lease: the caller that acquires it can
+initialize and use the context; other callers create independent temporary
+contexts. No caller waits for the lease. This keeps shared-forest concurrency
+and executor reentrancy safe without retaining contexts proportional to peak
+concurrency. Repeated overlapping calls can still incur context creation costs.
+
+The cache's small state allocation belongs to the forest and survives moves.
+Its optional context starts empty, so constructing a forest or predicting
+serially does not initialize a CPU context. Destruction releases both the
+context and state allocation. The immutable forest borrow keeps this state alive
+until a prediction joins its tasks; only atomic operations access the busy flag,
+and only its lease holder reads or writes the cached context.
+
+Pyre directly calls `enqueue_cpu_range` and `synchronize`, retaining the
+per-worker denormal handling and optional task tracing used by MAX. Its existing row partition already
+assigns exactly one block range to each worker, so another partitioning wrapper
+is unnecessary. An enqueue/join failure aborts, as MAX `parallelize` does,
+because unwinding could release storage still borrowed by outstanding tasks.
+
+Passing the cached context to MAX 26.5 `parallelize` is insufficient: its
+`ctx.or_else(DeviceContext(api="cpu"))` expression constructs the default argument
+before selecting the optional value. Direct enqueue avoids that unused context.
+
+Regression coverage includes repeated concurrent predictions, a nested executor
+call while the cached stream is executing, and moving a warmed forest before
+predicting with different worker counts. Measurements and remaining limits are
+in [context reuse results](context-reuse.md).
+
+## MAX reference API and captures
 
 Use the runtime closure overload with modern capture syntax:
 
@@ -64,6 +95,8 @@ per-call workers and process affinity for reproducible measurements.
 - [Runtime initialization API](https://mojolang.org/docs/std/runtime/asyncrt/initialize_runtime/)
   specifies shared-library initialization and process lifetime. Its older closure
   example should not override the modern syntax above.
+- [MAX 26.5 DeviceContext source](https://github.com/modular/modular/blob/max/v26.5/max/mojo/max/gpu/host/device_context.mojo)
+  specifies context ownership, enqueue, and synchronization.
 - [MAX parallelize API](https://max.modular.com/stable/api/mojo/max/algorithm/backend/cpu/parallelize/parallelize/)
   lists runtime closure and explicit worker overloads.
 

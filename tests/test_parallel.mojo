@@ -9,6 +9,7 @@ from numojo.core.type_aliases import Shape
 from numojo.core.layout.ndstrides import NDArrayStrides
 from numojo.core.accelerator.device import Device
 from pyre import Forest
+from pyre._executor import _Executor
 from pyre.accelerator import (
     predict_cpu,
     predict_margin_cpu,
@@ -237,7 +238,7 @@ def _concurrent_predictions(
     # Each inner call owns its output; the outer worker owns one error slot.
     def work(caller: Int) {forest, x, errors}:
         try:
-            for _ in range(3):
+            for _ in range(20):
                 var prediction = forest.predict(x, num_threads=2)
                 for row in range(x.shape[0]):
                     if prediction.item(row) != Float32(
@@ -262,6 +263,41 @@ def test_same_forest_concurrent_callers() raises:
     )
     assert_equal(errors[0], 0)
     assert_equal(errors[1], 0)
+
+
+def test_nested_executor_reuse() raises:
+    # Reenter while the cached stream is executing the outer callback. Waiting
+    # for that same stream from its callback would deadlock.
+    var executor = _Executor()
+    var values = List[Int](length=8, fill=0)
+    var output = values.unsafe_ptr()
+
+    def outer(i: Int) {executor, output}:
+        def inner(j: Int) {i, output}:
+            output[unsafe_offset=2 * i + j] += 1
+
+        try:
+            executor.run(inner, 2)
+        except:
+            output[unsafe_offset=2 * i] = -1000
+
+    for _ in range(20):
+        executor.run(outer, 4)
+    for value in values:
+        assert_equal(value, 20)
+
+
+def test_move_forest_after_context_warmup() raises:
+    var original = Forest(_stump[DType.float32](Operator.LT, False))
+    var x = NDArray[DType.float32](Shape(1031, 1))
+    for row in range(x.shape[0]):
+        x.itemset(row, Float32(row % 4) * 0.25)
+    var expected = original.predict(x, num_threads=4)
+    var moved = original^
+    for threads in [1, 8, 2, 4]:
+        var actual = moved.predict(x, num_threads=threads)
+        for row in range(x.shape[0]):
+            assert_equal(actual.item(row), expected.item(row))
 
 
 def test_parallel_cpu_accelerator_adapters() raises:

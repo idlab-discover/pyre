@@ -4,7 +4,7 @@ from std.math import exp, isnan
 from std.sys import simd_width_of
 from std.runtime import initialize_runtime
 from std.runtime.asyncrt import parallelism_level
-from max.algorithm import parallelize
+from ._executor import _Executor
 from balsa import Model, NodeType, Operator, TaskType, validate
 from numojo import NDArray
 from numojo.core.type_aliases import Shape
@@ -19,6 +19,7 @@ struct Forest[dtype: DType = DType.float32](Movable):
 
     var _model: Model[Self.dtype]
     var _lt_only: Bool
+    var _executor: _Executor
 
     def __init__(out self, var model: Model[Self.dtype]) raises:
         """Validate inference support, then take ownership without repacking.
@@ -67,6 +68,7 @@ struct Forest[dtype: DType = DType.float32](Movable):
                     raise Error("Pyre does not support vector leaves")
         self._lt_only = lt_only
         self._model = model^
+        self._executor = _Executor()
 
     def num_features(self) -> Int:
         return Int(self._model.num_feature)
@@ -221,7 +223,7 @@ struct Forest[dtype: DType = DType.float32](Movable):
         var workers = self._workers(rows, blocks, num_threads)
 
         # Each task owns whole SIMD blocks. Model/input captures are borrowed;
-        # parallelize joins before result storage or either borrow can expire.
+        # The executor joins before result storage or either borrow can expire.
         def work(task: Int) {self, x, output, rows, blocks, workers, threshold}:
             for block in range(
                 blocks * task // workers, blocks * (task + 1) // workers
@@ -266,7 +268,7 @@ struct Forest[dtype: DType = DType.float32](Movable):
         if workers == 1:
             work(0)
         else:
-            parallelize(work, workers, workers)
+            self._executor.run(work, workers)
         return result^
 
     def predict_margin[
