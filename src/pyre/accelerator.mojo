@@ -89,36 +89,45 @@ def _require_cpu[device: Device]() raises:
 def predict_cpu[
     dtype: DType, device: Device
 ](
-    forest: Forest[dtype], x: AcceleratorNDArray[dtype, device]
+    forest: Forest[dtype],
+    x: AcceleratorNDArray[dtype, device],
+    *,
+    num_threads: Int = 0,
 ) raises -> AcceleratorNDArray[dtype, device]:
     """Regression inference for CPU accelerator arrays; GPU input raises."""
     _require_cpu[device]()
     var host = to_host(x)
-    var result = forest.predict(host)
+    var result = forest.predict(host, num_threads=num_threads)
     return to_accelerator[dtype, device](result)
 
 
 def predict_margin_cpu[
     dtype: DType, device: Device
 ](
-    forest: Forest[dtype], x: AcceleratorNDArray[dtype, device]
+    forest: Forest[dtype],
+    x: AcceleratorNDArray[dtype, device],
+    *,
+    num_threads: Int = 0,
 ) raises -> AcceleratorNDArray[dtype, device]:
     """Raw margins for CPU accelerator arrays; GPU input raises."""
     _require_cpu[device]()
     var host = to_host(x)
-    var result = forest.predict_margin(host)
+    var result = forest.predict_margin(host, num_threads=num_threads)
     return to_accelerator[dtype, device](result)
 
 
 def predict_proba_cpu[
     dtype: DType, device: Device
 ](
-    forest: Forest[dtype], x: AcceleratorNDArray[dtype, device]
+    forest: Forest[dtype],
+    x: AcceleratorNDArray[dtype, device],
+    *,
+    num_threads: Int = 0,
 ) raises -> AcceleratorNDArray[dtype, device]:
     """Binary probabilities for CPU accelerator arrays; GPU input raises."""
     _require_cpu[device]()
     var host = to_host(x)
-    var result = forest.predict_proba(host)
+    var result = forest.predict_proba(host, num_threads=num_threads)
     return to_accelerator[dtype, device](result)
 
 
@@ -128,9 +137,11 @@ def predict_class_cpu[
     forest: Forest[dtype],
     x: AcceleratorNDArray[dtype, device],
     threshold: Scalar[dtype] = 0.5,
+    *,
+    num_threads: Int = 0,
 ) raises -> AcceleratorNDArray[DType.int64, device]:
     """Binary labels for CPU accelerator arrays; GPU input raises."""
     _require_cpu[device]()
     var host = to_host(x)
-    var result = forest.predict_class(host, threshold)
+    var result = forest.predict_class(host, threshold, num_threads=num_threads)
     return to_accelerator[DType.int64, device](result)

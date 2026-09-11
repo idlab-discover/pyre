@@ -6,18 +6,24 @@ platforms = ["linux-64"]
 version = "0.1.0"
 
 [tasks]
-prepare = "mkdir -p build"
-run = "mojo run -I src -I ../balsa/src examples/predict.mojo"
-build = { cmd = "mojo build -I src -I ../balsa/src examples/predict.mojo -o build/predict", depends-on = ["prepare"] }
-package = { cmd = "mojo precompile -I ../balsa/src src/pyre -o build/pyre.mojoc", depends-on = ["prepare"] }
-test = "mojo run -I src -I ../balsa/src -I tests tests/test_forest.mojo"
-test-gpu = "mojo run -I src -I ../balsa/src tests/test_accelerator.mojo"
-check = { depends-on = ["build", "package", "test"] }
+prepare = "python tools/prepare_balsa.py"
+run = { cmd = "mojo run -I src -I build/balsa-reference/src examples/predict.mojo", depends-on = ["prepare"] }
+build = { cmd = "mojo build -I src -I build/balsa-reference/src examples/predict.mojo -o build/predict", depends-on = ["prepare"] }
+package = { cmd = "mojo precompile -I build/balsa-reference/src src/pyre -o build/pyre.mojoc", depends-on = ["prepare"] }
+test = { cmd = "mojo run -I src -I build/balsa-reference/src -I tests tests/test_forest.mojo", depends-on = ["prepare"] }
+test-gpu = { cmd = "mojo run -I src -I build/balsa-reference/src tests/test_accelerator.mojo", depends-on = ["prepare"] }
+test-parallel = { cmd = "mojo run -I src -I build/balsa-reference/src -I tests tests/test_parallel.mojo", depends-on = ["prepare"] }
+check = { depends-on = ["build", "package", "test", "test-parallel"] }
 fmt = "mojo format src examples tests"
-assembly = { cmd = "mojo build -I src -I ../balsa/src --emit asm examples/predict.mojo -o build/predict.s", depends-on = ["prepare"] }
-oracle-generate = "pixi run --manifest-path ../balsa/pixi.toml -e oracle python ../pyre/tools/generate_references.py"
+assembly = { cmd = "mojo build -I src -I build/balsa-reference/src --emit asm examples/predict.mojo -o build/predict.s", depends-on = ["prepare"] }
+oracle-generate = { cmd = "pixi run --manifest-path build/balsa-reference/pixi.toml -e oracle python tools/generate_references.py", depends-on = ["prepare"] }
+benchmark-build = { cmd = "mojo build -I src -I build/balsa-reference/src tools/benchmark_worker.mojo -o build/benchmark-worker", depends-on = ["prepare"] }
+benchmark = { cmd = "python tools/benchmark.py", depends-on = ["benchmark-build"] }
 
 [dependencies]
 mojo = "==1.0.0"
+# Supplies max.algorithm CPU executor and the existing accelerator runtime.
 max-core = "==26.5.0"
 numojo = "==0.10.0"
+python = ">=3.12,<3.14"
+pyperf = ">=2.9,<3"

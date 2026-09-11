@@ -16,7 +16,7 @@ from pyre.accelerator import (
 
 
 def check_device[device: Device]() raises:
-    var forest = Forest(load("../balsa/tests/fixtures/float32_op2_missing0.tl"))
+    var forest = Forest(load("build/balsa-reference/tests/fixtures/float32_op2_missing0.tl"))
     for rows in [0, 1, 9, 33]:
         var host = NDArray[DType.float32](Shape(rows, 1))
         for i in range(rows):
@@ -30,7 +30,7 @@ def check_device[device: Device]() raises:
         x.offset = 1
         with assert_raises():
             _ = predict_cpu(forest, x)
-    var classifier = Forest(load("../balsa/tests/fixtures/float32_sigmoid.tl"))
+    var classifier = Forest(load("build/balsa-reference/tests/fixtures/float32_sigmoid.tl"))
     var h = NDArray[DType.float32](Shape(9, 1))
     for i in range(9):
         h.itemset(i, Float32(i % 2))
@@ -49,7 +49,7 @@ def check_device[device: Device]() raises:
 def check_gpu_unimplemented() raises:
     # No allocation/context: rejection must happen before touching GPU storage.
     var x = AcceleratorNDArray[DType.float32, Device.CUDA]()
-    var forest = Forest(load("../balsa/tests/fixtures/float32_op2_missing0.tl"))
+    var forest = Forest(load("build/balsa-reference/tests/fixtures/float32_op2_missing0.tl"))
     for operation in range(4):
         var raised = False
         try:
@@ -81,7 +81,7 @@ def check_cuda_transfers() raises:
     var restored = to_host(gpu)
     for i in range(9):
         assert_equal(restored.item(i), host.item(i))
-    var forest = Forest(load("../balsa/tests/fixtures/float32_op2_missing0.tl"))
+    var forest = Forest(load("build/balsa-reference/tests/fixtures/float32_op2_missing0.tl"))
     with assert_raises():
         _ = predict_cpu(forest, gpu)
 

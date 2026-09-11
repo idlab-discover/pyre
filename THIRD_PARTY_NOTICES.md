@@ -9,8 +9,9 @@ packed-node representation.
 
 Reference: <https://github.com/rapidsai/nvforest>.
 
-Balsa at sibling `../balsa/src` is a source dependency, tested at commit
-`b3a3f1c`. Its model fields implement the Treelite v4 format. Refer to Balsa's
+Balsa is materialized from sibling `../balsa` Git history into
+`build/balsa-reference` and compiled against the immutable commit
+`737874f3eae9d95a0517397130f445b303d28cc6`. Its model fields implement the Treelite v4 format. Refer to Balsa's
 `THIRD_PARTY_NOTICES.md` for its upstream attribution. Checkpoint fixtures are owned by Balsa. Pyre records Treelite 4.6.1 prediction
 expectations and source hashes without duplicating checkpoint files.
 

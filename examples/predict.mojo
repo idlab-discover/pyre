@@ -15,7 +15,7 @@ def predict[dtype: DType](var model: Model[dtype]) raises:
 
 
 def main() raises:
-    var model = load_auto("../balsa/tests/fixtures/float64_op2_missing0.tl")
+    var model = load_auto("build/balsa-reference/tests/fixtures/float64_op2_missing0.tl")
     if model.isa[Model[DType.float32]]():
         predict(model^.unwrap[Model[DType.float32]]())
     else:

@@ -8,15 +8,17 @@
 - Float32/float64 SIMD CPU numerical scalar regression and binary classification.
 - Balsa-builder tests, twelve upstream GTIL reference checkpoints, and rejection
   checks for unsupported trained-framework models.
+- MAX CPU row parallelism with per-call thread limits and pyperf stage comparisons.
 - Native package/example/test tasks; explicit accelerator copies and CPU-array
   adapters. GPU predictions raise `NotImplementedError` before touching storage.
 
 The [README](../README.md) defines the supported interface and limitations.
 The [responsibility split](responsibilities.md) governs future changes.
 
-## 1. Measure the CPU implementation
+## 1. Extend CPU measurements
 
-Benchmark scalar-width and SIMD traversal over Balsa's trained models and larger
+The initial pyperf baseline and staged optimizations are in [benchmarks](benchmarks/README.md).
+Continue measuring scalar-width and SIMD traversal over Balsa's trained models and larger
 representative ensembles. Separate loading, structural validation, prediction,
 and allocation costs. Vary depth, row/feature/tree count and precision. Measure
 memory retained by Balsa metadata before deciding whether a compact serving
@@ -42,7 +44,7 @@ original leaf-ID and per-tree output modes without changing checkpoint node IDs.
 
 Add Python interfaces and CuPy/DLPack interchange once ownership and stream
 contracts are tested. Resolve the NuMojo transfer workaround against a tested
-upstream release. Measure CPU threading, GPU work mapping, shared memory,
+upstream release. Broaden CPU threading measurements and measure GPU work mapping, shared memory,
 workspace reuse and layouts before introducing autotuning. Compare with pinned
 nvForest on identical hardware, inputs and precision, separating transfers and
 first-call costs from steady-state execution.

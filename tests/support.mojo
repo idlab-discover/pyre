@@ -18,7 +18,7 @@ def check_dense_reference[
     tolerance: Scalar[dtype] = 0,
 ) raises:
     comptime assert dtype.is_floating_point()
-    var forest = Forest(load[dtype]("../balsa/tests/fixtures/" + name))
+    var forest = Forest(load[dtype]("build/balsa-reference/tests/fixtures/" + name))
     var rows = len(values) // features
     var x = NDArray[dtype](Shape(rows, features))
     for i in range(len(values)):

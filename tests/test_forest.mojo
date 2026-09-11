@@ -89,7 +89,7 @@ def test_owned_preparation_and_offset_view() raises:
 
 
 def test_invalid_inputs_and_unsupported_models() raises:
-    var forest = Forest(load("../balsa/tests/fixtures/float32_op2_missing0.tl"))
+    var forest = Forest(load("build/balsa-reference/tests/fixtures/float32_op2_missing0.tl"))
     var rank_one = NDArray[DType.float32](Shape(3))
     with assert_raises():
         _ = forest.predict(rank_one)
@@ -103,7 +103,7 @@ def test_invalid_inputs_and_unsupported_models() raises:
     with assert_raises():
         _ = forest.predict_proba(backing)
     for name in ["category", "vector", "multi_target"]:
-        var model = load("../balsa/tests/fixtures/float32_" + name + ".tl")
+        var model = load("build/balsa-reference/tests/fixtures/float32_" + name + ".tl")
         with assert_raises():
             _ = Forest(model^)
     var unsupported = make_stump()
@@ -126,7 +126,7 @@ def check_owned_model[dtype: DType](var model: Model[dtype]) raises:
 
 def test_balsa_automatic_precision_and_move() raises:
     for name in ["float32_op2_missing0", "float64_op2_missing0"]:
-        var loaded = load_auto("../balsa/tests/fixtures/" + name + ".tl")
+        var loaded = load_auto("build/balsa-reference/tests/fixtures/" + name + ".tl")
         if loaded.isa[Model[DType.float32]]():
             check_owned_model(loaded^.unwrap[Model[DType.float32]]())
         else:
@@ -141,14 +141,14 @@ def test_trained_unsupported_semantics() raises:
         "sklearn_extra_multioutput_classification",
     ]:
         var model = load[DType.float64](
-            "../balsa/tests/fixtures/frameworks/" + name + ".tl"
+            "build/balsa-reference/tests/fixtures/frameworks/" + name + ".tl"
         )
         with assert_raises():
             _ = Forest(model^)
 
 
 def test_binary_threshold_tie_and_extremes() raises:
-    var model = load("../balsa/tests/fixtures/float32_sigmoid.tl")
+    var model = load("build/balsa-reference/tests/fixtures/float32_sigmoid.tl")
     model.base_scores[0] = 0
     for t in range(len(model.trees)):
         model.trees[t].leaf_value[1] = 0

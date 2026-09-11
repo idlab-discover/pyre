@@ -11,7 +11,7 @@ import numpy as np
 import treelite
 
 ROOT = Path(__file__).resolve().parents[1]
-BALSA = ROOT.parent / "balsa"
+BALSA = ROOT / "build/balsa-reference"
 SOURCE = BALSA / "tests/fixtures"
 assert treelite.__version__ == "4.6.1"
 lines = [
@@ -24,9 +24,7 @@ lines = [
 manifest = {
     "treelite": treelite.__version__,
     "numpy": np.__version__,
-    "balsa_commit": subprocess.check_output(
-        ["git", "-C", str(BALSA), "rev-parse", "HEAD"], text=True
-    ).strip(),
+    "balsa_commit": (BALSA / ".reference-commit").read_text().strip(),
     "fixtures": [],
 }
 cases = [(f"{dtype}_{kind}.tl", False) for dtype in ("float32", "float64")
