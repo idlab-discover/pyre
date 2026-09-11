@@ -81,8 +81,14 @@ choose it by benchmarking the target CPU and model. Binary sigmoid
 and label conversion run inside each worker with one output allocation, without
 intermediate margin/probability arrays. Tree summation order is preserved. Base
 scores are added in their Balsa Float64 precision before narrowing the result.
-Run `pixi run assembly` to inspect vector code generation. No measured speedup
-over nvForest is claimed.
+At construction, Pyre checks whether every numerical split uses LT. Each
+prediction dispatches once to an LT-only or general kernel. Compile-time
+specialization removes operator loads and the five-way comparison from the
+LT-only kernel; mixed/EQ/LE/GT/GE forests retain general semantics. Leaf metadata
+does not affect dispatch. No model repacking or runtime code generation occurs.
+Run `pixi run assembly` to inspect vector code generation. See
+[SIMD width and LT specialization](docs/simd-specialization.md) for measurements
+and the compile-time design.
 
 Supported: float32 and float64 numerical scalar leaves; EQ/LT/LE/GT/GE; NaN default
 routing; root-only/uneven-depth trees; single-output regression/identity and
@@ -144,9 +150,9 @@ categorical/vector models are tested for rejection.
 
 Parallel tests also cover shared-forest concurrent calls, all thread controls,
 width 16, zero-feature forests, deep lane divergence and sigmoid extremes.
-`pixi run test-specialization` checks all four public operations at widths
-1/4/16 in both precisions, with mixed operators, NaNs, ties and uneven depths.
-See [width selection](docs/simd-specialization.md).
+Specialization tests exercise all four public operations at widths 1/4/16 in
+both precisions, mixed operators in later nodes/trees, ties, NaNs and uneven
+depths. `pixi run test-specialization` runs this focused suite.
 
 Additional tests use Balsa builders and text accessors, transfer both model
 precisions from `load_auto`, and cover all operators/default directions, empty

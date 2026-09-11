@@ -1,4 +1,4 @@
-"""Public width selection against fixed-tree predictions."""
+"""Public width selection and model-based LT dispatch against fixed trees."""
 
 from std.math import exp, inf, nan
 from std.testing import assert_equal, assert_almost_equal, TestSuite
@@ -159,6 +159,19 @@ def test_public_widths_float64() raises:
     _check[DType.float64, 1]()
     _check[DType.float64, 4]()
     _check[DType.float64, 16]()
+
+
+def test_operator_scan_includes_later_trees() raises:
+    # The first tree is LT, but the second tree's LE tie must go left.
+    var model = _model[DType.float32](False, False)
+    model.trees[1].cmp[0] = Operator.LE
+    var forest = Forest(model^)
+    var x = NDArray[DType.float32](Shape(17, 3))
+    for i in range(x.size):
+        x.itemset(i, 0.5)
+    var y = forest.predict[16](x, num_threads=4)
+    for row in range(17):
+        assert_equal(y.item(row), Float32(1.5))
 
 
 def main() raises:

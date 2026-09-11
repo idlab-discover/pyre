@@ -18,6 +18,7 @@ struct Forest[dtype: DType = DType.float32](Movable):
     """
 
     var _model: Model[Self.dtype]
+    var _lt_only: Bool
 
     def __init__(out self, var model: Model[Self.dtype]) raises:
         """Validate inference support, then take ownership without repacking.
@@ -53,14 +54,18 @@ struct Forest[dtype: DType = DType.float32](Movable):
                 raise Error(
                     "Pyre requires scalar tree target/class IDs of zero"
                 )
+        var lt_only = True
         for tree in model.trees:
             if len(tree.tree_extensions) != 0 or len(tree.node_extensions) != 0:
                 raise Error("Pyre cannot interpret tree/node extensions")
             for node in range(Int(tree.num_nodes)):
                 if tree.node_type[node] == NodeType.CATEGORICAL:
                     raise Error("Pyre does not support categorical splits")
+                if tree.node_type[node] != NodeType.LEAF:
+                    lt_only &= tree.cmp[node] == Operator.LT
                 if len(tree.leaf_values(node)) != 0:
                     raise Error("Pyre does not support vector leaves")
+        self._lt_only = lt_only
         self._model = model^
 
     def num_features(self) -> Int:
@@ -85,7 +90,7 @@ struct Forest[dtype: DType = DType.float32](Movable):
             raise Error("Pyre MVP requires C-contiguous input")
 
     def _block[
-        width: Int
+        width: Int, lt_only: Bool
     ](self, x: NDArray[Self.dtype], row: Int, count: Int) -> SIMD[
         Self.dtype, width
     ]:
@@ -102,14 +107,18 @@ struct Forest[dtype: DType = DType.float32](Movable):
                         + Int(tree.split_index[node])
                     ]
                     var threshold = tree.threshold[node]
-                    var op = tree.cmp[node]
-                    var left = (
-                        (op == Operator.EQ and value == threshold)
-                        or (op == Operator.LT and value < threshold)
-                        or (op == Operator.LE and value <= threshold)
-                        or (op == Operator.GT and value > threshold)
-                        or (op == Operator.GE and value >= threshold)
-                    )
+                    var left: Bool
+                    comptime if lt_only:
+                        left = value < threshold
+                    else:
+                        var op = tree.cmp[node]
+                        left = (
+                            (op == Operator.EQ and value == threshold)
+                            or (op == Operator.LT and value < threshold)
+                            or (op == Operator.LE and value <= threshold)
+                            or (op == Operator.GT and value > threshold)
+                            or (op == Operator.GE and value >= threshold)
+                        )
                     if isnan(value):
                         left = tree.default_left[node] != 0
                     node = Int(tree.cleft[node] if left else tree.cright[node])
@@ -144,18 +153,22 @@ struct Forest[dtype: DType = DType.float32](Movable):
                     var thresholds = tree.threshold.unsafe_ptr().unsafe_gather(
                         ids
                     )
-                    var ops = tree.cmp.unsafe_ptr().unsafe_gather(ids)
                     var defaults = (
                         tree.default_left.unsafe_ptr().unsafe_gather(ids).ne(0)
                     )
                     var right = tree.cright.unsafe_ptr().unsafe_gather(ids)
-                    var condition = (
-                        (ops.eq(Operator.EQ) & values.eq(thresholds))
-                        | (ops.eq(Operator.LT) & values.lt(thresholds))
-                        | (ops.eq(Operator.LE) & values.le(thresholds))
-                        | (ops.eq(Operator.GT) & values.gt(thresholds))
-                        | (ops.eq(Operator.GE) & values.ge(thresholds))
-                    )
+                    var condition: SIMD[DType.bool, width]
+                    comptime if lt_only:
+                        condition = values.lt(thresholds)
+                    else:
+                        var ops = tree.cmp.unsafe_ptr().unsafe_gather(ids)
+                        condition = (
+                            (ops.eq(Operator.EQ) & values.eq(thresholds))
+                            | (ops.eq(Operator.LT) & values.lt(thresholds))
+                            | (ops.eq(Operator.LE) & values.le(thresholds))
+                            | (ops.eq(Operator.GT) & values.gt(thresholds))
+                            | (ops.eq(Operator.GE) & values.ge(thresholds))
+                        )
                     condition = isnan(values).select(defaults, condition)
                     ids = active.select(condition.select(left, right), ids)
                 total += tree.leaf_value.unsafe_ptr().unsafe_gather(ids, valid)
@@ -169,6 +182,24 @@ struct Forest[dtype: DType = DType.float32](Movable):
 
     def _predict[
         width: Int, output_dtype: DType, mode: Int
+    ](
+        self,
+        x: NDArray[Self.dtype],
+        num_threads: Int,
+        threshold: Scalar[Self.dtype] = 0.5,
+    ) raises -> NDArray[output_dtype]:
+        # Inspect the immutable model once at construction, dispatch once per
+        # prediction. The LT kernel has no operator loads or operator dispatch.
+        if self._lt_only:
+            return self._predict_impl[width, output_dtype, mode, True](
+                x, num_threads, threshold
+            )
+        return self._predict_impl[width, output_dtype, mode, False](
+            x, num_threads, threshold
+        )
+
+    def _predict_impl[
+        width: Int, output_dtype: DType, mode: Int, lt_only: Bool
     ](
         self,
         x: NDArray[Self.dtype],
@@ -199,9 +230,9 @@ struct Forest[dtype: DType = DType.float32](Movable):
                 var count = min(width, rows - row)
                 var value = SIMD[Self.dtype, width](0)
                 if count == 1:
-                    value[0] = self._block[1](x, row, 1)
+                    value[0] = self._block[1, lt_only](x, row, 1)
                 else:
-                    value = self._block[width](x, row, count)
+                    value = self._block[width, lt_only](x, row, count)
                 comptime if mode != 0:
                     # Stable vector sigmoid; intermediate magnitudes stay <= 1.
                     comptime assert Self.dtype.is_floating_point()
