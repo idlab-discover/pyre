@@ -13,7 +13,8 @@ package = { cmd = "mojo precompile -I build/balsa-reference/src src/pyre -o buil
 test = { cmd = "mojo run -I src -I build/balsa-reference/src -I tests tests/test_forest.mojo", depends-on = ["prepare"] }
 test-gpu = { cmd = "mojo run -I src -I build/balsa-reference/src tests/test_accelerator.mojo", depends-on = ["prepare"] }
 test-parallel = { cmd = "mojo run -I src -I build/balsa-reference/src -I tests tests/test_parallel.mojo", depends-on = ["prepare"] }
-check = { depends-on = ["build", "package", "test", "test-parallel"] }
+test-specialization = { cmd = "mojo run -I src -I build/balsa-reference/src tests/test_specialization.mojo", depends-on = ["prepare"] }
+check = { depends-on = ["build", "package", "test", "test-parallel", "test-specialization"] }
 fmt = "mojo format src examples tests"
 assembly = { cmd = "mojo build -I src -I build/balsa-reference/src --emit asm examples/predict.mojo -o build/predict.s", depends-on = ["prepare"] }
 oracle-generate = { cmd = "pixi run --manifest-path build/balsa-reference/pixi.toml -e oracle python tools/generate_references.py", depends-on = ["prepare"] }

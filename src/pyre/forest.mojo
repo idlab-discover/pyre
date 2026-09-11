@@ -264,28 +264,32 @@ struct Forest[dtype: DType = DType.float32](Movable):
         )
         return max(1, min(blocks, limit))
 
-    def predict(
-        self, x: NDArray[Self.dtype], *, num_threads: Int = 0
-    ) raises -> NDArray[Self.dtype]:
+    def predict[
+        width: Int = simd_width_of[Self.dtype]()
+    ](self, x: NDArray[Self.dtype], *, num_threads: Int = 0) raises -> NDArray[
+        Self.dtype
+    ]:
         """Regression values. Classifiers must use predict_class/proba."""
         if self.is_classifier():
             raise Error(
                 "Use predict_class or predict_proba for binary classification"
             )
-        return self.predict_margin(x, num_threads=num_threads)
+        return self.predict_margin[width](x, num_threads=num_threads)
 
-    def predict_proba(
-        self, x: NDArray[Self.dtype], *, num_threads: Int = 0
-    ) raises -> NDArray[Self.dtype]:
+    def predict_proba[
+        width: Int = simd_width_of[Self.dtype]()
+    ](self, x: NDArray[Self.dtype], *, num_threads: Int = 0) raises -> NDArray[
+        Self.dtype
+    ]:
         """Binary class probabilities in columns [negative, positive]."""
         comptime assert Self.dtype.is_floating_point()
         if not self.is_classifier():
             raise Error("predict_proba requires a binary classifier")
-        return self._predict[simd_width_of[Self.dtype](), Self.dtype, 1](
-            x, num_threads
-        )
+        return self._predict[width, Self.dtype, 1](x, num_threads)
 
-    def predict_class(
+    def predict_class[
+        width: Int = simd_width_of[Self.dtype]()
+    ](
         self,
         x: NDArray[Self.dtype],
         threshold: Scalar[Self.dtype] = 0.5,
@@ -297,6 +301,4 @@ struct Forest[dtype: DType = DType.float32](Movable):
             raise Error("Classification threshold must lie in [0, 1]")
         if not self.is_classifier():
             raise Error("predict_class requires a binary classifier")
-        return self._predict[simd_width_of[Self.dtype](), DType.int64, 2](
-            x, num_threads, threshold
-        )
+        return self._predict[width, DType.int64, 2](x, num_threads, threshold)
