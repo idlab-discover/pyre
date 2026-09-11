@@ -1,0 +1,79 @@
+{
+  "treelite": "4.6.1",
+  "numpy": "2.2.6",
+  "balsa_commit": "b3a3f1c49e010c6cddbb690fbdb26d1af62827bf",
+  "fixtures": [
+    {
+      "balsa_path": "tests/fixtures/float32_leaf.tl",
+      "sha256": "0f3996bc3d2ada5b76475122ad249352b2a61acc49326e9c97dcd531961661fd",
+      "rows": 9,
+      "tolerance": 0.0
+    },
+    {
+      "balsa_path": "tests/fixtures/float32_op2_missing0.tl",
+      "sha256": "bfe2dbfaccae3b0e381e8642f3e077d6a7044324467bc74d08ab6f8066d98c4c",
+      "rows": 9,
+      "tolerance": 0.0
+    },
+    {
+      "balsa_path": "tests/fixtures/float32_deep.tl",
+      "sha256": "baa62e172768b38fd4ce6a2a26d235a599c670e225a4e8d15fa89c0ae9d08b3e",
+      "rows": 9,
+      "tolerance": 0.0
+    },
+    {
+      "balsa_path": "tests/fixtures/float32_sigmoid.tl",
+      "sha256": "395461adef0009a77c6b232a6eb79428e0d96f3961c739da4412c2659269a6c7",
+      "rows": 9,
+      "tolerance": 0.0
+    },
+    {
+      "balsa_path": "tests/fixtures/float64_leaf.tl",
+      "sha256": "a26a7233509cf5edccbc18226627fce73c2fea0f0de93feeaac845ba0986a33b",
+      "rows": 9,
+      "tolerance": 0.0
+    },
+    {
+      "balsa_path": "tests/fixtures/float64_op2_missing0.tl",
+      "sha256": "25b1d39421928364e97d73c36458712a2a2d9ddfbae21d56949d261cb9caa68a",
+      "rows": 9,
+      "tolerance": 0.0
+    },
+    {
+      "balsa_path": "tests/fixtures/float64_deep.tl",
+      "sha256": "68391b436dce07b20cd4ffeb84f717799b30a08586ee0627cd6a6af9a6afcfa3",
+      "rows": 9,
+      "tolerance": 0.0
+    },
+    {
+      "balsa_path": "tests/fixtures/float64_sigmoid.tl",
+      "sha256": "f82f7a7318c11cf446ecdb0727997388839199a25283ddde734df1d82e72c673",
+      "rows": 9,
+      "tolerance": 0.0
+    },
+    {
+      "balsa_path": "tests/fixtures/frameworks/xgboost_regression.tl",
+      "sha256": "632ec0599c690c3e9c939f49670f2b85940fdf31c63cb3e1faad26fa0ab2399c",
+      "rows": 45,
+      "tolerance": 1e-06
+    },
+    {
+      "balsa_path": "tests/fixtures/frameworks/catboost_numeric_regression.tl",
+      "sha256": "33603cd7a7bf6e597c88728b8d56934c8fe86e9e35afff0f7960ca1bdc68bba0",
+      "rows": 45,
+      "tolerance": 1e-12
+    },
+    {
+      "balsa_path": "tests/fixtures/frameworks/sklearn_gradient_binary.tl",
+      "sha256": "d61a9d21e0ef5b64036f675efc7f5fb4d11c2ff1dfcf63e7cdabf7a228ff048b",
+      "rows": 45,
+      "tolerance": 1e-12
+    },
+    {
+      "balsa_path": "tests/fixtures/frameworks/sklearn_hist_missing_regression.tl",
+      "sha256": "b77c4b80228f49fc88f0a5f8d51bbb1a8008ff22a32dd40683b6868c5251d5ca",
+      "rows": 45,
+      "tolerance": 1e-12
+    }
+  ]
+}
