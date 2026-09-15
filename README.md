@@ -1,6 +1,6 @@
 # Pyre
 
-CPU-first tree-ensemble inference in pure Mojo, using **Balsa models** and
+CPU and GPU tree-ensemble inference in pure Mojo, using **Balsa models** and
 **NuMojo arrays**. The native runtime does not call Python or libtreelite.
 
 ## Build and test
@@ -17,7 +17,7 @@ and benchmarking; inference remains native Mojo.
 pixi install --locked
 pixi run run
 pixi run check
-pixi run test-gpu  # explicit CUDA copies + GPU inference rejection
+pixi run test-gpu  # GPU inference, native storage, and legacy transfer tests
 ```
 
 `check` builds the example, precompiles `build/pyre.mojoc`, and runs native tests.
@@ -92,7 +92,7 @@ Supported: float32 and float64 numerical scalar leaves; EQ/LT/LE/GT/GE; NaN defa
 routing; root-only/uneven-depth trees; single-output regression/identity and
 binary/sigmoid; averaging, base scores, sigmoid alpha and stable probabilities.
 Categorical splits, vector leaves, multiclass/multi-target output, unknown
-extensions and other task/transform combinations are rejected. GPU kernels, leaf-ID/per-tree output and autotuning remain future work.
+extensions and other task/transform combinations are rejected. Leaf-ID/per-tree output and autotuning remain future work.
 
 ## CPU threading
 
@@ -123,12 +123,85 @@ var serial = forest.predict_margin(x, num_threads=1)
 var parallel = forest.predict_margin(x, num_threads=4)
 ```
 
-## Accelerator arrays
+## Native GPU inference
+
+`pyre.gpu` provides `GpuForest`, `GpuBatch[dtype]` (a rank-two
+`GpuArray[dtype, 2]`), `GpuArray[dtype, rank]`, `upload`, and `upload_into`. Balsa still owns
+Treelite loading and structural validation. GPU preparation borrows its model,
+checks the same supported semantics as CPU, and copies the required fields into
+independent resident device arrays. The source model can then be released or
+edited. The current flattened layout is a baseline, not an optimal-layout claim.
+
+```mojo
+from max.gpu.host import DeviceContext
+from pyre.gpu import GpuForest, GpuArray, upload
+
+var context = DeviceContext()
+var gpu_forest = GpuForest.prepare(model, context)
+var batch = upload(samples, context)  # rank-two contiguous NuMojo NDArray
+var result = gpu_forest.predict_margin(batch)  # result remains on GPU
+var host_result = result.to_host()  # explicit download to NuMojo
+```
+
+The four prediction names and task/output rules match the CPU table above.
+Each has a corresponding `*_into(batch, output)` method to reuse an output
+allocation; `predict_class_into` accepts `threshold` after `output`.
+Create outputs with `GpuArray[dtype, 1](context, Shape(rows))`,
+`GpuArray[dtype, 2](context, Shape(rows, 2))` for probabilities, or
+`GpuArray[DType.int64, 1]` for labels. `dim(axis)` and `size()` inspect shape.
+Inputs and outputs must not overlap; wrong shapes/devices raise before launch.
+
+Native device inputs do not require NuMojo wrapping:
+`GpuBatch[dtype].from_buffer(buffer^, rows, features, offset=0, context=context)`
+retains the allocation without copying data. For a rank-one result or a result
+with an offset, use `GpuArray[dtype, rank](buffer^, Shape(...), offset=...,
+context=context)`. Construction checks capacity and dimensions, completes the
+buffer's source context, and reassigns the native buffer to the supplied context
+on the same device. Shared native handles observe this reassignment.
+Only contiguous row-major layouts are currently accepted. Upload accepts
+contiguous NuMojo offset views; strided input needs explicit conversion.
+
+`upload_into(samples, batch)` reuses existing device storage and completes before
+returning. Both shape and dtype must match; dtype mismatches fail at compile time.
+Validation failures leave destination bytes intact. Logical shapes stay immutable:
+for changing row counts, retain a native buffer handle and create a new
+`GpuBatch.from_buffer` wrapper with the active shape. Its capacity and offset are
+checked, and its device allocation is retained. Reuse an output buffer with a
+matching active output shape in the same way; the example demonstrates this.
+
+Use an owning `DeviceContext` from native allocation/creation, not a borrowed
+context returned by `buffer.context()`. Forests and arrays retain its handle and
+release their buffers before it; results can outlive the forest and caller's
+context variable. Moving a Pyre array preserves its allocation. If a native
+buffer wraps externally owned memory, that external owner must still outlive
+all Pyre uses. Do not mutate private fields or shared input storage during calls.
+
+All public operations finish before returning, including the `*_into` methods.
+External producers must complete before prediction. Calls sharing a context
+must not overlap; independent contexts are supported. GPU inference never stages
+inputs to CPU or implicitly downloads results. A failed enqueue drains the
+stream before unwinding; a failed synchronization aborts because storage may
+still be in use. No cuFile or Python dependency is used by inference or transfers.
+
+Run [the GPU example](examples/predict_gpu.mojo) with `pixi run run-gpu`.
+`pixi run test-gpu` requires an available GPU and exercises saved GTIL oracles,
+both precisions, all four operations, owned storage, offsets, and cleanup.
+`pixi run check` remains the CPU/package check. The GPU path is validated on the
+RTX 5090 with the pinned toolchain; other GPU backends are not yet validated.
+
+The [GPU benchmark guide](docs/gpu-benchmarking.md) describes the separate
+performance corpus, pinned offline generation, correctness gates and phase
+boundaries. After corpus generation, `pixi run benchmark-gpu` builds a native
+worker and exports calibrated repeated-process pyperf results under ignored
+`docs/private/benchmarks/gpu/`. Use `pixi run python tools/benchmark_gpu.py --help`
+for a subset or a new output path.
+
+## Legacy accelerator-array adapters
 
 `pyre.accelerator` provides explicit `to_accelerator[dtype, device](x)` and
 `to_host(x)` transfers, and `predict_cpu`, `predict_margin_cpu`,
 `predict_proba_cpu`, `predict_class_cpu` for CPU `AcceleratorNDArray` inputs.
-Every prediction operation rejects GPU input before accessing storage, with
+These CPU adapter operations reject GPU input before accessing storage, with
 Mojo `Error("NotImplementedError: GPU inference requires GPU kernels; CPU fallback is disabled")`.
 There is no GPU-to-CPU inference fallback. Rejection tests need no GPU;
 `test-gpu` also verifies actual CUDA transfers on the RTX 5090.

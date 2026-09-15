@@ -25,6 +25,10 @@ variant and move the selected model into Pyre through `unwrap`; there is no
 second Pyre variant/loader abstraction. Balsa builders construct inference test
 models without manual wire-field bookkeeping.
 
+GPU preparation now creates independent resident fields from the same Balsa
+model; model-layout decisions and performance measurements belong in Pyre.
+Native GPU buffers/layouts need no NuMojo accelerator wrapper.
+
 Structural validity is distinct from execution support. Balsa can preserve
 categorical, vector-output or extended models which Pyre currently rejects.
 Pyre keeps the owned model private to preserve validation invariants. It retains
@@ -40,8 +44,8 @@ in advance.
   inputs and GTIL expectations, not another model-format fixture suite.
 - Keep named format concepts and accessors in Balsa. Do not add Balsa inference
   routines or force its storage to depend on NuMojo.
-- Any future GPU path must run GPU kernels. Until then, all GPU predictions
-  raise before transfer or storage access; explicit copy helpers remain separate.
+- Native GPU prediction runs GPU kernels on resident storage. Explicit upload
+  and download remain separate; legacy CPU accelerator adapters reject GPU input.
 - The NuMojo 0.10.0 storage-borrowing workaround is isolated in Pyre's accelerator
   adapter. It is not a Balsa responsibility.
 

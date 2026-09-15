@@ -4,5 +4,8 @@
 build/
 __pycache__/
 
+# Local CPU comparison experiments
+/this-vs-nvforest/
+
 # Local planning, research notes, and benchmark results
 /docs/private/

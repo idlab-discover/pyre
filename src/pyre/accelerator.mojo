@@ -1,7 +1,8 @@
 """Explicit array transfers and CPU-array inference adapters.
 
-GPU inference is not implemented. Every prediction operation rejects GPU arrays
-before reading or transferring data. Explicit transfer helpers remain available.
+These legacy CPU adapters reject GPU arrays before reading or transferring
+data. Native GPU inference is provided separately by pyre.gpu. Explicit
+transfer helpers remain available.
 """
 from numojo import NDArray
 from numojo.core.accelerator_ndarray import AcceleratorNDArray

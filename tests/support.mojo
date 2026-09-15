@@ -1,4 +1,5 @@
 from balsa import load
+from gpu_support import check_gpu_reference
 from std.testing import assert_equal, assert_true
 from std.math import abs
 from pyre import Forest
@@ -7,7 +8,7 @@ from numojo.core.type_aliases import Shape
 
 
 def check_dense_reference[
-    dtype: DType
+    dtype: DType, on_gpu: Bool = False
 ](
     name: String,
     values: List[Scalar[dtype]],
@@ -17,8 +18,15 @@ def check_dense_reference[
     binary: Bool,
     tolerance: Scalar[dtype] = 0,
 ) raises:
+    comptime if on_gpu:
+        check_gpu_reference[dtype](
+            name, values, features, expected, predictions, binary, tolerance
+        )
+        return
     comptime assert dtype.is_floating_point()
-    var forest = Forest(load[dtype]("build/balsa-reference/tests/fixtures/" + name))
+    var forest = Forest(
+        load[dtype]("build/balsa-reference/tests/fixtures/" + name)
+    )
     var rows = len(values) // features
     var x = NDArray[dtype](Shape(rows, features))
     for i in range(len(values)):

@@ -5,7 +5,8 @@ from std.sys import simd_width_of
 from std.runtime import initialize_runtime
 from std.runtime.asyncrt import parallelism_level
 from ._executor import _Executor
-from balsa import Model, NodeType, Operator, TaskType, validate
+from ._validation import validate_inference
+from balsa import Model, NodeType, Operator, TaskType
 from numojo import NDArray
 from numojo.core.type_aliases import Shape
 
@@ -27,45 +28,7 @@ struct Forest[dtype: DType = DType.float32](Movable):
         Pass model^ to transfer an existing model, or model.copy() to retain an
         independently mutable source. Balsa remains responsible for structure.
         """
-        validate(model)
-        if model.num_tree == 0:
-            raise Error("Pyre requires at least one tree")
-        if (
-            model.num_target != 1
-            or model.num_class[0] != 1
-            or model.leaf_vector_shape[0] != 1
-            or model.leaf_vector_shape[1] != 1
-        ):
-            raise Error("Pyre supports single-output scalar leaves only")
-        var transform = model.postprocessor_name()
-        if not (
-            (model.task_type == TaskType.REGRESSOR and transform == "identity")
-            or (
-                model.task_type == TaskType.BINARY_CLF
-                and transform == "sigmoid"
-            )
-        ):
-            raise Error(
-                "Pyre supports regression/identity and binary/sigmoid only"
-            )
-        if len(model.extensions) != 0:
-            raise Error("Pyre cannot interpret model extensions")
-        for tree_id in range(len(model.trees)):
-            if model.target_id[tree_id] != 0 or model.class_id[tree_id] != 0:
-                raise Error(
-                    "Pyre requires scalar tree target/class IDs of zero"
-                )
-        var lt_only = True
-        for tree in model.trees:
-            if len(tree.tree_extensions) != 0 or len(tree.node_extensions) != 0:
-                raise Error("Pyre cannot interpret tree/node extensions")
-            for node in range(Int(tree.num_nodes)):
-                if tree.node_type[node] == NodeType.CATEGORICAL:
-                    raise Error("Pyre does not support categorical splits")
-                if tree.node_type[node] != NodeType.LEAF:
-                    lt_only &= tree.cmp[node] == Operator.LT
-                if len(tree.leaf_values(node)) != 0:
-                    raise Error("Pyre does not support vector leaves")
+        var lt_only = validate_inference(model)
         self._lt_only = lt_only
         self._model = model^
         self._executor = _Executor()

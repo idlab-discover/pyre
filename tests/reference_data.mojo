@@ -3,8 +3,8 @@ from support import check_dense_reference
 from std.math import nan, inf
 
 
-def check_references() raises:
-    check_dense_reference[DType.float32](
+def check_references[on_gpu: Bool = False]() raises:
+    check_dense_reference[DType.float32, on_gpu](
         "float32_leaf.tl",
         [
             -inf[DType.float32](),
@@ -23,7 +23,7 @@ def check_references() raises:
         False,
         0.0,
     )
-    check_dense_reference[DType.float32](
+    check_dense_reference[DType.float32, on_gpu](
         "float32_op2_missing0.tl",
         [
             -inf[DType.float32](),
@@ -42,7 +42,7 @@ def check_references() raises:
         False,
         0.0,
     )
-    check_dense_reference[DType.float32](
+    check_dense_reference[DType.float32, on_gpu](
         "float32_deep.tl",
         [
             -inf[DType.float32](),
@@ -61,7 +61,7 @@ def check_references() raises:
         False,
         0.0,
     )
-    check_dense_reference[DType.float32](
+    check_dense_reference[DType.float32, on_gpu](
         "float32_sigmoid.tl",
         [
             -inf[DType.float32](),
@@ -90,7 +90,7 @@ def check_references() raises:
         True,
         0.0,
     )
-    check_dense_reference[DType.float64](
+    check_dense_reference[DType.float64, on_gpu](
         "float64_leaf.tl",
         [
             -inf[DType.float64](),
@@ -109,7 +109,7 @@ def check_references() raises:
         False,
         0.0,
     )
-    check_dense_reference[DType.float64](
+    check_dense_reference[DType.float64, on_gpu](
         "float64_op2_missing0.tl",
         [
             -inf[DType.float64](),
@@ -128,7 +128,7 @@ def check_references() raises:
         False,
         0.0,
     )
-    check_dense_reference[DType.float64](
+    check_dense_reference[DType.float64, on_gpu](
         "float64_deep.tl",
         [
             -inf[DType.float64](),
@@ -147,7 +147,7 @@ def check_references() raises:
         False,
         0.0,
     )
-    check_dense_reference[DType.float64](
+    check_dense_reference[DType.float64, on_gpu](
         "float64_sigmoid.tl",
         [
             -inf[DType.float64](),
@@ -176,7 +176,7 @@ def check_references() raises:
         True,
         0.0,
     )
-    check_dense_reference[DType.float32](
+    check_dense_reference[DType.float32, on_gpu](
         "frameworks/xgboost_regression.tl",
         [
             -1.5,
@@ -458,7 +458,7 @@ def check_references() raises:
         False,
         1e-06,
     )
-    check_dense_reference[DType.float64](
+    check_dense_reference[DType.float64, on_gpu](
         "frameworks/catboost_numeric_regression.tl",
         [
             -1.5,
@@ -740,7 +740,7 @@ def check_references() raises:
         False,
         1e-12,
     )
-    check_dense_reference[DType.float64](
+    check_dense_reference[DType.float64, on_gpu](
         "frameworks/sklearn_gradient_binary.tl",
         [
             -1.5,
@@ -1022,7 +1022,7 @@ def check_references() raises:
         True,
         1e-12,
     )
-    check_dense_reference[DType.float64](
+    check_dense_reference[DType.float64, on_gpu](
         "frameworks/sklearn_hist_missing_regression.tl",
         [
             -1.5,

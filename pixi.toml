@@ -11,7 +11,14 @@ run = { cmd = "mojo run -I src -I build/balsa-reference/src examples/predict.moj
 build = { cmd = "mojo build -I src -I build/balsa-reference/src examples/predict.mojo -o build/predict", depends-on = ["prepare"] }
 package = { cmd = "mojo precompile -I build/balsa-reference/src src/pyre -o build/pyre.mojoc", depends-on = ["prepare"] }
 test = { cmd = "mojo run -I src -I build/balsa-reference/src -I tests tests/test_forest.mojo", depends-on = ["prepare"] }
-test-gpu = { cmd = "mojo run -I src -I build/balsa-reference/src tests/test_accelerator.mojo", depends-on = ["prepare"] }
+test-gpu-transfers = { cmd = "mojo run -I src -I build/balsa-reference/src tests/test_accelerator.mojo", depends-on = ["prepare"] }
+build-gpu-tests = { cmd = "mojo build -I src -I build/balsa-reference/src -I tests tests/test_gpu.mojo -o build/test-gpu", depends-on = ["prepare"] }
+test-gpu-inference = { cmd = "build/test-gpu", depends-on = ["build-gpu-tests"] }
+run-gpu = { cmd = "mojo run -I src -I build/balsa-reference/src examples/predict_gpu.mojo", depends-on = ["prepare"] }
+test-gpu = { depends-on = ["test-gpu-transfers", "test-gpu-inference", "run-gpu"] }
+benchmark-gpu-build = { cmd = "mojo build -I src -I build/balsa-reference/src tools/benchmark_gpu_worker.mojo -o build/benchmark-gpu-worker", depends-on = ["prepare"] }
+benchmark-gpu = { cmd = "python tools/benchmark_gpu.py", depends-on = ["benchmark-gpu-build"] }
+gpu-corpus-build = { cmd = "mojo build -I build/balsa-reference/src tools/generate_gpu_model.mojo -o build/generate-gpu-model", depends-on = ["prepare"] }
 test-parallel = { cmd = "mojo run -I src -I build/balsa-reference/src -I tests tests/test_parallel.mojo", depends-on = ["prepare"] }
 test-specialization = { cmd = "mojo run -I src -I build/balsa-reference/src tests/test_specialization.mojo", depends-on = ["prepare"] }
 check = { depends-on = ["build", "package", "test", "test-parallel", "test-specialization"] }

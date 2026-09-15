@@ -19,7 +19,7 @@ lines = [
     "from support import check_dense_reference",
     "from std.math import nan, inf",
     "",
-    "def check_references() raises:",
+    "def check_references[on_gpu: Bool = False]() raises:",
 ]
 manifest = {
     "treelite": treelite.__version__,
@@ -70,7 +70,7 @@ for name, trained in cases:
         return "[" + ", ".join(literal(v) for v in array.reshape(-1)) + "]"
 
     tolerance = (1e-6 if dtype == "float32" else 1e-12) if trained else 0.0
-    lines += [f'    check_dense_reference[DType.{dtype}]("{name}",',
+    lines += [f'    check_dense_reference[DType.{dtype}, on_gpu]("{name}",',
               f"        {values(x)}, {features},",
               f"        {values(margins)}, {values(predictions)}, {binary}, {tolerance})"]
     manifest["fixtures"].append({"balsa_path": "tests/fixtures/" + name,
