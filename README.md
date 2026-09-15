@@ -86,9 +86,7 @@ prediction dispatches once to an LT-only or general kernel. Compile-time
 specialization removes operator loads and the five-way comparison from the
 LT-only kernel; mixed/EQ/LE/GT/GE forests retain general semantics. Leaf metadata
 does not affect dispatch. No model repacking or runtime code generation occurs.
-Run `pixi run assembly` to inspect vector code generation. See
-[SIMD width and LT specialization](docs/simd-specialization.md) for measurements
-and the compile-time design.
+Run `pixi run assembly` to inspect vector code generation.
 
 Supported: float32 and float64 numerical scalar leaves; EQ/LT/LE/GT/GE; NaN default
 routing; root-only/uneven-depth trees; single-output regression/identity and
@@ -118,15 +116,12 @@ share its resources. Set process affinity before
 runtime initialization to constrain available CPUs. Pyre initializes the runtime
 before parallel execution, including when used from a non-Mojo host. The existing
 `max-core==26.5.0` dependency supplies `max.algorithm`; no Python model-serving
-package is required. See [executor details](docs/executor-notes.md).
+package is required.
 
 ```mojo
 var serial = forest.predict_margin(x, num_threads=1)
 var parallel = forest.predict_margin(x, num_threads=4)
 ```
-
-See [benchmark methodology and raw results](docs/benchmarks/README.md) for the
-original baseline and the separate threading and SIMD measurements.
 
 ## Accelerator arrays
 
@@ -167,5 +162,5 @@ from Balsa's checkpoints. Pyre neither copies nor regenerates those checkpoints.
 revision and tolerances. All twelve fixture hashes match the pinned `737874f`
 snapshot; the stored reference predictions remain valid.
 
-See [responsibilities](docs/responsibilities.md), [next steps](docs/porting-plan.md)
-and [upstream notices](THIRD_PARTY_NOTICES.md).
+See [responsibilities](docs/responsibilities.md) and
+[upstream notices](THIRD_PARTY_NOTICES.md).

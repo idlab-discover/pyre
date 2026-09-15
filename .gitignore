@@ -3,3 +3,6 @@
 !.pixi/config.toml
 build/
 __pycache__/
+
+# Local planning, research notes, and benchmark results
+/docs/private/

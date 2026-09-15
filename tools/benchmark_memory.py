@@ -23,6 +23,7 @@ for stage, threads in [('baseline', 1), ('threaded', 8), ('final', 8)]:
             records.append(dict(stage=stage, threads=threads, rows=4096, trees=64,
                                 depth=6, operation=operation, repeat=repeat,
                                 process_peak_rss_kib=usage.ru_maxrss))
-(ROOT / 'docs/benchmarks/memory.json').write_text(json.dumps(records, indent=2) + '\n')
+(ROOT / 'docs/private/benchmarks').mkdir(parents=True, exist_ok=True)
+(ROOT / 'docs/private/benchmarks/memory.json').write_text(json.dumps(records, indent=2) + '\n')
 for record in records:
     print(record)

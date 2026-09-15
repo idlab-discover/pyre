@@ -1,7 +1,7 @@
 """pyperf-managed native inference: calibrated loops, independent processes.
 
 Example: pixi run benchmark --processes 6 --values 5 --warmups 2 --min-time .15
-         --affinity 0-7 -o docs/benchmarks/baseline.json
+         --affinity 0-7 -o docs/private/benchmarks/baseline.json
 """
 import hashlib
 import os
