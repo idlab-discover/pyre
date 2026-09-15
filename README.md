@@ -103,6 +103,8 @@ default) selects a conservative automatic policy: serial below 256 rows or
 parallelism and the number of SIMD blocks. Negative values raise, including
 on empty input. Work is split into contiguous groups of whole SIMD blocks; each
 worker writes disjoint output rows and reads the immutable forest and input.
+For threaded calls, the calling thread runs one partition while the MAX pool
+runs the others; the requested task limit includes the caller's partition.
 Tree accumulation order is unchanged. Calls finish before returning their arrays,
 and simultaneous callers may share a forest with independently owned outputs.
 Do not mutate the input or private model fields while prediction is running.

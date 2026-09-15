@@ -74,7 +74,14 @@ struct _Executor(Movable):
             # Direct enqueue avoids parallelize's eager default-context
             # construction even when its optional context argument is supplied.
             try:
-                context.enqueue_cpu_range(wrapped, count=workers)
+                # Let the caller perform the final partition while the pool
+                # runs the others. Fully queued short calls can spend much
+                # longer waiting for the last task to start than doing work.
+                # The total number of partitions remains the requested limit.
+                if workers > 1:
+                    context.enqueue_cpu_range(wrapped, count=workers - 1)
+                if workers > 0:
+                    wrapped(workers - 1)
                 context.synchronize()
             except error:
                 # As in MAX parallelize, do not unwind borrowed captures while
