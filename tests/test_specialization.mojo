@@ -209,5 +209,42 @@ def test_operator_scan_includes_later_trees() raises:
         assert_equal(y.item(row), Float32(1.5))
 
 
+def _check_automatic_worker_cutoffs[dtype: DType]() raises:
+    # Two trees cross the serial/four-worker and four/eight-worker cutoffs
+    # at 4096 and 16384 rows. Include partial SIMD blocks on either side.
+    var regression = Forest(_model[dtype](True, False))
+    var classifier = Forest(_model[dtype](True, True))
+    for rows in [4095, 4096, 4097, 16383, 16384, 16385]:
+        var x = NDArray[dtype](Shape(rows, 3))
+        for i in range(x.size):
+            x.itemset(i, Scalar[dtype](i % 5) * 0.5)
+            if i % 7 == 0:
+                x.itemset(i, nan[dtype]())
+        var expected_y = regression.predict(x, num_threads=1)
+        var expected_margin = classifier.predict_margin(x, num_threads=1)
+        var expected_proba = classifier.predict_proba(x, num_threads=1)
+        var expected_class = classifier.predict_class(
+            x, threshold=0.37, num_threads=1
+        )
+        var y = regression.predict(x)
+        var margin = classifier.predict_margin(x)
+        var proba = classifier.predict_proba(x)
+        var label = classifier.predict_class(x, threshold=0.37)
+        for row in range(rows):
+            assert_equal(y.item(row), expected_y.item(row))
+            assert_equal(margin.item(row), expected_margin.item(row))
+            assert_equal(label.item(row), expected_class.item(row))
+            for column in range(2):
+                assert_equal(
+                    proba.item(2 * row + column),
+                    expected_proba.item(2 * row + column),
+                )
+
+
+def test_automatic_worker_cutoffs() raises:
+    _check_automatic_worker_cutoffs[DType.float32]()
+    _check_automatic_worker_cutoffs[DType.float64]()
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

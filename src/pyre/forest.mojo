@@ -286,12 +286,15 @@ struct Forest[dtype: DType = DType.float32](Movable):
             raise Error("num_threads must be nonnegative (0 selects automatic)")
         if num_threads == 1 or blocks < 2:
             return 1
-        if num_threads == 0 and (rows < 256 or rows * self.num_trees() < 32768):
+        if num_threads == 0 and (rows < 256 or rows * self.num_trees() < 8192):
             return 1
         initialize_runtime()
         var limit = min(8, parallelism_level()) if num_threads == 0 else min(
             num_threads, parallelism_level()
         )
+        # Intermediate workloads use fewer tasks to limit scheduling variability.
+        if num_threads == 0 and rows * self.num_trees() < 32768:
+            limit = min(limit, 4)
         return max(1, min(blocks, limit))
 
     def predict(

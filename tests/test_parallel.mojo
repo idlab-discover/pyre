@@ -386,9 +386,9 @@ def test_root_only_zero_features() raises:
     tree.leaf(0, 1.75)
     model.add_tree(tree^.build())
     var forest = Forest(model^.build())
-    for rows in [0, 1, 15, 17, 1031]:
+    for rows in [0, 1, 15, 17, 1031, 8191, 8192, 8193]:
         var x = NDArray[DType.float32](Shape(rows, 0))
-        for threads in [1, 4]:
+        for threads in [0, 1, 4]:
             var output = forest.predict_margin[16](x, num_threads=threads)
             assert_equal(output.size, rows)
             for row in range(rows):

@@ -103,8 +103,9 @@ extensions and other task/transform combinations are rejected. Leaf-ID/per-tree 
 Every prediction method accepts keyword `num_threads`: `1` forces serial
 execution, positive values bound task concurrency for that call, and `0` (the
 default) selects a conservative automatic policy: serial below 256 rows or
-32,768 row–tree pairs, otherwise at most eight workers, capped by runtime
-parallelism and the number of SIMD blocks. Negative values raise, including
+8,192 row–tree pairs, at most four workers below 32,768 pairs, and at most eight
+workers for larger workloads. Worker counts are capped by runtime parallelism
+and the number of SIMD blocks. Negative values raise, including
 on empty input. Work is split into contiguous groups of whole SIMD blocks; each
 worker writes disjoint output rows and reads the immutable forest and input.
 For threaded calls, the calling thread runs one partition while the MAX pool
