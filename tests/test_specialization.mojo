@@ -1,7 +1,12 @@
 """Public width selection and model-based LT dispatch against fixed trees."""
 
 from std.math import exp, inf, nan
-from std.testing import assert_equal, assert_almost_equal, TestSuite
+from std.testing import (
+    assert_equal,
+    assert_almost_equal,
+    assert_raises,
+    TestSuite,
+)
 from balsa import Model, ModelBuilder, TreeBuilder, Operator, TaskType
 from numojo import NDArray
 from numojo.core.type_aliases import Shape
@@ -101,24 +106,38 @@ def _check[dtype: DType, width: Int]() raises:
     for mixed in [False, True]:
         var regression = Forest(_model[dtype](mixed, False))
         var classifier = Forest(_model[dtype](mixed, True))
-        for rows in [0, 1, 2, 7, 15, 16, 17, 31, 32, 33, 65]:
+        for rows in [0, 1, 2, 7, 15, 16, 17, 31, 32, 33, 40, 63, 64, 65, 129]:
             var x = NDArray[dtype](Shape(rows, 3))
             for row in range(rows):
                 for feature in range(3):
                     x.itemset(
                         3 * row + feature, values[(row + 3 * feature) % 8]
                     )
-            for threads in [1, 4]:
-                var y = regression.predict[width](x, num_threads=threads)
-                var margin = classifier.predict_margin[width](
-                    x, num_threads=threads
-                )
-                var probability = classifier.predict_proba[width](
-                    x, num_threads=threads
-                )
-                var label = classifier.predict_class[width](
-                    x, threshold=0.5, num_threads=threads
-                )
+            for threads in [0, 1, 4, 8]:
+                var y: NDArray[dtype]
+                var margin: NDArray[dtype]
+                var probability: NDArray[dtype]
+                var label: NDArray[DType.int64]
+                comptime if width == 0:
+                    y = regression.predict(x, num_threads=threads)
+                    margin = classifier.predict_margin(x, num_threads=threads)
+                    probability = classifier.predict_proba(
+                        x, num_threads=threads
+                    )
+                    label = classifier.predict_class(
+                        x, threshold=0.5, num_threads=threads
+                    )
+                else:
+                    y = regression.predict[width](x, num_threads=threads)
+                    margin = classifier.predict_margin[width](
+                        x, num_threads=threads
+                    )
+                    probability = classifier.predict_proba[width](
+                        x, num_threads=threads
+                    )
+                    label = classifier.predict_class[width](
+                        x, threshold=0.5, num_threads=threads
+                    )
                 assert_equal(y.size, rows)
                 assert_equal(margin.size, rows)
                 assert_equal(probability.shape[0], rows)
@@ -159,6 +178,22 @@ def test_public_widths_float64() raises:
     _check[DType.float64, 1]()
     _check[DType.float64, 4]()
     _check[DType.float64, 16]()
+
+
+def test_default_width_boundaries() raises:
+    # Compare all four public defaults with independently evaluated trees,
+    # including mixed operators, NaNs/ties and both sides of the width cutoff.
+    _check[DType.float32, 0]()
+    _check[DType.float64, 0]()
+
+
+def test_default_width_rejects_scalar_input() raises:
+    var forest = Forest(_model[DType.float32](False, False))
+    var scalar = NDArray[DType.float32](Shape())
+    with assert_raises():
+        _ = forest.predict(scalar)
+    with assert_raises():
+        _ = forest.predict_margin(scalar)
 
 
 def test_operator_scan_includes_later_trees() raises:

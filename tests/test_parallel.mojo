@@ -1,7 +1,9 @@
 """Deterministic row-parallel inference, public controls, and numeric edges."""
 
 from std.math import nan, inf
+from std.atomic import Atomic
 from std.testing import assert_equal, assert_raises, TestSuite
+from std.time import perf_counter_ns
 from max.algorithm import parallelize
 from balsa import load, Model, ModelBuilder, TreeBuilder, Operator, TaskType
 from numojo import NDArray
@@ -285,6 +287,33 @@ def test_nested_executor_reuse() raises:
         executor.run(outer, 4)
     for value in values:
         assert_equal(value, 20)
+
+
+def test_executor_joins_every_partition() raises:
+    var executor = _Executor()
+    var visits = List[Atomic[DType.int64]]()
+    for _ in range(8):
+        visits.append(Atomic[DType.int64](0))
+    var counts = visits.unsafe_ptr()
+
+    def work(i: Int) {counts}:
+        # Make the first partition finish after the others. Returning when a
+        # faster partition finishes must not release this callback's captures.
+        if i == 0:
+            var begin = perf_counter_ns()
+            while perf_counter_ns() - begin < 100_000:
+                pass
+        _ = counts[unsafe_offset=i].fetch_add(1)
+
+    for workers in [1, 2, 8, 4, 8]:
+        for i in range(8):
+            counts[unsafe_offset=i].store(0)
+        for _ in range(3):
+            executor.run(work, workers)
+        for i in range(8):
+            assert_equal(
+                counts[unsafe_offset=i].load(), Int64(3 if i < workers else 0)
+            )
 
 
 def test_move_forest_after_context_warmup() raises:

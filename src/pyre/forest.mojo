@@ -145,6 +145,31 @@ struct Forest[dtype: DType = DType.float32](Movable):
             Self.dtype
         ]()
 
+    def _predict_default[
+        output_dtype: DType, mode: Int
+    ](
+        self,
+        x: NDArray[Self.dtype],
+        num_threads: Int,
+        threshold: Scalar[Self.dtype] = 0.5,
+    ) raises -> NDArray[output_dtype]:
+        # Limit the wider default to the native vector sizes measured so far.
+        # Small batches retain native vectors to avoid oversized tail gathers.
+        comptime if (
+            simd_width_of[DType.float32]() == 8
+            and simd_width_of[DType.float64]() == 4
+        ):
+            if x.ndim == 2 and x.shape[0] >= 32:
+                # Do not reduce the available task count below an explicit
+                # limit. Automatic calls have enough blocks at their cutoff.
+                if num_threads <= 1 or (x.shape[0] + 15) // 16 >= num_threads:
+                    return self._predict[16, output_dtype, mode](
+                        x, num_threads, threshold
+                    )
+        return self._predict[simd_width_of[Self.dtype](), output_dtype, mode](
+            x, num_threads, threshold
+        )
+
     def _predict[
         width: Int, output_dtype: DType, mode: Int
     ](
@@ -234,8 +259,17 @@ struct Forest[dtype: DType = DType.float32](Movable):
             self._executor.run(work, workers)
         return result^
 
+    def predict_margin(
+        self,
+        x: NDArray[Self.dtype],
+        *,
+        num_threads: Int = 0,
+    ) raises -> NDArray[Self.dtype]:
+        """Raw margins [rows]. num_threads=0 auto, 1 serial, >1 a task limit."""
+        return self._predict_default[Self.dtype, 0](x, num_threads)
+
     def predict_margin[
-        width: Int = simd_width_of[Self.dtype]()
+        width: Int
     ](
         self,
         x: NDArray[Self.dtype],
@@ -260,8 +294,18 @@ struct Forest[dtype: DType = DType.float32](Movable):
         )
         return max(1, min(blocks, limit))
 
+    def predict(
+        self, x: NDArray[Self.dtype], *, num_threads: Int = 0
+    ) raises -> NDArray[Self.dtype]:
+        """Regression values. Classifiers must use predict_class/proba."""
+        if self.is_classifier():
+            raise Error(
+                "Use predict_class or predict_proba for binary classification"
+            )
+        return self.predict_margin(x, num_threads=num_threads)
+
     def predict[
-        width: Int = simd_width_of[Self.dtype]()
+        width: Int
     ](self, x: NDArray[Self.dtype], *, num_threads: Int = 0) raises -> NDArray[
         Self.dtype
     ]:
@@ -272,8 +316,17 @@ struct Forest[dtype: DType = DType.float32](Movable):
             )
         return self.predict_margin[width](x, num_threads=num_threads)
 
+    def predict_proba(
+        self, x: NDArray[Self.dtype], *, num_threads: Int = 0
+    ) raises -> NDArray[Self.dtype]:
+        """Binary class probabilities in columns [negative, positive]."""
+        comptime assert Self.dtype.is_floating_point()
+        if not self.is_classifier():
+            raise Error("predict_proba requires a binary classifier")
+        return self._predict_default[Self.dtype, 1](x, num_threads)
+
     def predict_proba[
-        width: Int = simd_width_of[Self.dtype]()
+        width: Int
     ](self, x: NDArray[Self.dtype], *, num_threads: Int = 0) raises -> NDArray[
         Self.dtype
     ]:
@@ -283,8 +336,22 @@ struct Forest[dtype: DType = DType.float32](Movable):
             raise Error("predict_proba requires a binary classifier")
         return self._predict[width, Self.dtype, 1](x, num_threads)
 
+    def predict_class(
+        self,
+        x: NDArray[Self.dtype],
+        threshold: Scalar[Self.dtype] = 0.5,
+        *,
+        num_threads: Int = 0,
+    ) raises -> NDArray[DType.int64]:
+        """Binary labels; probability must be strictly above threshold."""
+        if not (threshold >= 0 and threshold <= 1):
+            raise Error("Classification threshold must lie in [0, 1]")
+        if not self.is_classifier():
+            raise Error("predict_class requires a binary classifier")
+        return self._predict_default[DType.int64, 2](x, num_threads, threshold)
+
     def predict_class[
-        width: Int = simd_width_of[Self.dtype]()
+        width: Int
     ](
         self,
         x: NDArray[Self.dtype],
