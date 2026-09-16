@@ -73,8 +73,12 @@ Traversal operates on groups of independent rows using pointer gathers, SIMD
 comparisons, child selection, accumulation, averaging and bias. Finished lanes
 stay at their leaf and partial batches mask input reads; single-row blocks use
 scalar traversal. All four `Forest` prediction methods accept a compile-time
-`width` parameter. The default remains `simd_width_of[dtype]()`; use
-`predict[16](x, num_threads=1)` to opt into 16-row SIMD groups, or
+`width` parameter. Without an explicit width, batches of at least 32 rows use
+16-row groups on targets whose native SIMD widths are eight Float32 lanes and
+four Float64 lanes. With an explicit thread limit greater than one, widening
+also requires enough 16-row groups to meet that limit. Other calls use
+`simd_width_of[dtype]()`. Explicit widths always override this selection: use
+`predict[16](x, num_threads=1)` to force 16-row SIMD groups, or
 `predict_margin[1](x, num_threads=1)` for a scalar comparison. Width must be a
 positive power of two. A logical width can span multiple hardware registers;
 choose it by benchmarking the target CPU and model. Binary sigmoid
