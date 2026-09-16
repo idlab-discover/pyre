@@ -1,5 +1,6 @@
 """Deterministic row-parallel inference, public controls, and numeric edges."""
 
+from acceptance import stump, goes_left, check_binary_edges
 from std.math import nan, inf
 from std.atomic import Atomic
 from std.testing import assert_equal, assert_raises, TestSuite
@@ -22,28 +23,10 @@ from pyre.accelerator import (
 )
 
 
-def _stump[dtype: DType](op: Int8, default_left: Bool) raises -> Model[dtype]:
-    var model = ModelBuilder[dtype](num_feature=1, base_scores=[0.25])
-    var tree = TreeBuilder[dtype](num_nodes=3)
-    tree.numerical_split(
-        0,
-        feature=0,
-        threshold=0.5,
-        left=1,
-        right=2,
-        op=op,
-        default_left=default_left,
-    )
-    tree.leaf(1, -1.25)
-    tree.leaf(2, 2.75)
-    model.add_tree(tree^.build())
-    return model^.build()
-
-
 def _check_operators[dtype: DType]() raises:
     for op in [Operator.EQ, Operator.LT, Operator.LE, Operator.GT, Operator.GE]:
         for default_left in [False, True]:
-            var forest = Forest(_stump[dtype](op, default_left))
+            var forest = Forest(stump[dtype](op, default_left, trees=1))
             # Exercise empty input, incomplete SIMD blocks, and worker tails.
             for rows in [0, 1, 3, 7, 17, 65, 1031]:
                 var x = NDArray[dtype](Shape(rows, 1))
@@ -64,19 +47,7 @@ def _check_operators[dtype: DType]() raises:
                     assert_equal(prediction.size, rows)
                     for i in range(rows):
                         var value = x.item(i)
-                        var left: Bool
-                        if value != value:
-                            left = default_left
-                        elif op == Operator.EQ:
-                            left = value == 0.5
-                        elif op == Operator.LT:
-                            left = value < 0.5
-                        elif op == Operator.LE:
-                            left = value <= 0.5
-                        elif op == Operator.GT:
-                            left = value > 0.5
-                        else:
-                            left = value >= 0.5
+                        var left = goes_left(value, op, default_left)
                         var expected = Scalar[dtype](-1 if left else 3)
                         assert_equal(serial.item(i), expected)
                         assert_equal(scalar.item(i), expected)
@@ -94,7 +65,7 @@ def test_parallel_operators_float64() raises:
 
 
 def test_parallel_offset_view() raises:
-    var forest = Forest(_stump[DType.float32](Operator.LT, False))
+    var forest = Forest(stump[DType.float32](Operator.LT, False, trees=1))
     var backing = NDArray[DType.float32](Shape(1060, 1))
     for i in range(backing.size):
         backing.itemset(i, Float32(i % 4) * 0.25)
@@ -166,33 +137,13 @@ def test_parallel_trained_models() raises:
 
 
 def test_parallel_classifier_empty_and_thresholds() raises:
-    var model = load("build/balsa-reference/tests/fixtures/float32_sigmoid.tl")
-    model.base_scores[0] = 0
-    for tree in range(len(model.trees)):
-        model.trees[tree].leaf_value[1] = 0
-        model.trees[tree].leaf_value[2] = 0
-    var forest = Forest(model^)
-    for rows in [0, 1, 7, 1031]:
-        var x = NDArray[DType.float32](Shape(rows, 1))
-        for row in range(rows):
-            x.itemset(row, 0)
-        for threads in [0, 1, 2, 4, 8]:
-            var probabilities = forest.predict_proba(x, num_threads=threads)
-            assert_equal(probabilities.shape[0], rows)
-            assert_equal(probabilities.shape[1], 2)
-            for threshold in [Float32(0), Float32(0.5), Float32(1)]:
-                var labels = forest.predict_class(
-                    x, threshold, num_threads=threads
-                )
-                assert_equal(labels.size, rows)
-                for row in range(rows):
-                    assert_equal(probabilities.item(2 * row), Float32(0.5))
-                    assert_equal(probabilities.item(2 * row + 1), Float32(0.5))
-                    assert_equal(labels.item(row), Int64(threshold < 0.5))
+    for threads in [0, 1, 2, 4, 8]:
+        check_binary_edges[DType.float32]([0, 1, 7, 1031], threads)
+        check_binary_edges[DType.float64]([0, 1, 7, 1031], threads)
 
 
 def test_negative_thread_counts() raises:
-    var regression = Forest(_stump[DType.float32](Operator.LT, False))
+    var regression = Forest(stump[DType.float32](Operator.LT, False, trees=1))
     var classifier = Forest(
         load("build/balsa-reference/tests/fixtures/float32_sigmoid.tl")
     )
@@ -254,7 +205,7 @@ def _concurrent_predictions(
 
 
 def test_same_forest_concurrent_callers() raises:
-    var forest = Forest(_stump[DType.float32](Operator.LT, False))
+    var forest = Forest(stump[DType.float32](Operator.LT, False, trees=1))
     var x = NDArray[DType.float32](Shape(1031, 1))
     for row in range(x.shape[0]):
         x.itemset(row, Float32(row % 4) * 0.25)
@@ -317,7 +268,7 @@ def test_executor_joins_every_partition() raises:
 
 
 def test_move_forest_after_context_warmup() raises:
-    var original = Forest(_stump[DType.float32](Operator.LT, False))
+    var original = Forest(stump[DType.float32](Operator.LT, False, trees=1))
     var x = NDArray[DType.float32](Shape(1031, 1))
     for row in range(x.shape[0]):
         x.itemset(row, Float32(row % 4) * 0.25)
@@ -330,7 +281,7 @@ def test_move_forest_after_context_warmup() raises:
 
 
 def test_parallel_cpu_accelerator_adapters() raises:
-    var forest = Forest(_stump[DType.float32](Operator.LT, False))
+    var forest = Forest(stump[DType.float32](Operator.LT, False, trees=1))
     var classifier = Forest(
         load("build/balsa-reference/tests/fixtures/float32_sigmoid.tl")
     )
@@ -430,7 +381,7 @@ def test_divergent_leaf_depths_and_wide_tails() raises:
 
 def _check_sigmoid_extremes[dtype: DType]() raises:
     for magnitude in [Scalar[dtype](1000), inf[dtype]()]:
-        var model = _stump[dtype](Operator.LT, False)
+        var model = stump[dtype](Operator.LT, False, trees=1)
         model.task_type = TaskType.BINARY_CLF
         model.set_postprocessor_name("sigmoid")
         model.base_scores[0] = 0

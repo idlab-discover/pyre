@@ -16,7 +16,7 @@ SOURCE = BALSA / "tests/fixtures"
 assert treelite.__version__ == "4.6.1"
 lines = [
     '"""Generated Treelite GTIL predictions; see tools/generate_references.py."""',
-    "from support import check_dense_reference",
+    "from acceptance import check_dense_reference",
     "from std.math import nan, inf",
     "",
     "def check_references[on_gpu: Bool = False]() raises:",
@@ -39,7 +39,6 @@ for name, trained in cases:
     metadata = json.loads(model.dump_as_json())
     dtype = metadata["threshold_type"]
     features = metadata["num_feature"]
-    binary = metadata["task_type"] == "kBinaryClf"
     if trained:
         x = ((np.arange(33 * features).reshape(33, features) % 13 - 6) * 0.25).astype(dtype)
         x[::5, 1] = np.nan
@@ -71,8 +70,8 @@ for name, trained in cases:
 
     tolerance = (1e-6 if dtype == "float32" else 1e-12) if trained else 0.0
     lines += [f'    check_dense_reference[DType.{dtype}, on_gpu]("{name}",',
-              f"        {values(x)}, {features},",
-              f"        {values(margins)}, {values(predictions)}, {binary}, {tolerance})"]
+              f"        {values(x)},",
+              f"        {values(margins)}, {values(predictions)}, {tolerance})"]
     manifest["fixtures"].append({"balsa_path": "tests/fixtures/" + name,
                                 "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                                 "rows": len(x), "tolerance": tolerance})

@@ -1,5 +1,5 @@
 """Generated Treelite GTIL predictions; see tools/generate_references.py."""
-from support import check_dense_reference
+from acceptance import check_dense_reference
 from std.math import nan, inf
 
 
@@ -17,10 +17,8 @@ def check_references[on_gpu: Bool = False]() raises:
             inf[DType.float32](),
             nan[DType.float32](),
         ],
-        1,
         [1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5],
         [1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5],
-        False,
         0.0,
     )
     check_dense_reference[DType.float32, on_gpu](
@@ -36,10 +34,8 @@ def check_references[on_gpu: Bool = False]() raises:
             inf[DType.float32](),
             nan[DType.float32](),
         ],
-        1,
         [-1.0, -1.0, -1.0, -1.0, -1.0, 3.0, 3.0, 3.0, 3.0],
         [-1.0, -1.0, -1.0, -1.0, -1.0, 3.0, 3.0, 3.0, 3.0],
-        False,
         0.0,
     )
     check_dense_reference[DType.float32, on_gpu](
@@ -55,10 +51,8 @@ def check_references[on_gpu: Bool = False]() raises:
             inf[DType.float32](),
             nan[DType.float32](),
         ],
-        1,
         [-3.0, -3.0, 0.375, 0.375, 0.375, 2.0, 2.0, 2.0, 2.0],
         [-3.0, -3.0, 0.375, 0.375, 0.375, 2.0, 2.0, 2.0, 2.0],
-        False,
         0.0,
     )
     check_dense_reference[DType.float32, on_gpu](
@@ -74,7 +68,6 @@ def check_references[on_gpu: Bool = False]() raises:
             inf[DType.float32](),
             nan[DType.float32](),
         ],
-        1,
         [-1.0, -1.0, -1.0, -1.0, -1.0, 3.0, 3.0, 3.0, 3.0],
         [
             0.15446525812149048,
@@ -87,7 +80,6 @@ def check_references[on_gpu: Bool = False]() raises:
             0.9939402341842651,
             0.9939402341842651,
         ],
-        True,
         0.0,
     )
     check_dense_reference[DType.float64, on_gpu](
@@ -103,10 +95,8 @@ def check_references[on_gpu: Bool = False]() raises:
             inf[DType.float64](),
             nan[DType.float64](),
         ],
-        1,
         [1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5],
         [1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5],
-        False,
         0.0,
     )
     check_dense_reference[DType.float64, on_gpu](
@@ -122,10 +112,8 @@ def check_references[on_gpu: Bool = False]() raises:
             inf[DType.float64](),
             nan[DType.float64](),
         ],
-        1,
         [-1.0, -1.0, -1.0, -1.0, -1.0, 3.0, 3.0, 3.0, 3.0],
         [-1.0, -1.0, -1.0, -1.0, -1.0, 3.0, 3.0, 3.0, 3.0],
-        False,
         0.0,
     )
     check_dense_reference[DType.float64, on_gpu](
@@ -141,10 +129,8 @@ def check_references[on_gpu: Bool = False]() raises:
             inf[DType.float64](),
             nan[DType.float64](),
         ],
-        1,
         [-3.0, -3.0, 0.375, 0.375, 0.375, 2.0, 2.0, 2.0, 2.0],
         [-3.0, -3.0, 0.375, 0.375, 0.375, 2.0, 2.0, 2.0, 2.0],
-        False,
         0.0,
     )
     check_dense_reference[DType.float64, on_gpu](
@@ -160,7 +146,6 @@ def check_references[on_gpu: Bool = False]() raises:
             inf[DType.float64](),
             nan[DType.float64](),
         ],
-        1,
         [-1.0, -1.0, -1.0, -1.0, -1.0, 3.0, 3.0, 3.0, 3.0],
         [
             0.15446525885576748,
@@ -173,7 +158,6 @@ def check_references[on_gpu: Bool = False]() raises:
             0.9939401993700243,
             0.9939401993700243,
         ],
-        True,
         0.0,
     )
     check_dense_reference[DType.float32, on_gpu](
@@ -360,7 +344,6 @@ def check_references[on_gpu: Bool = False]() raises:
             0.0,
             0.0,
         ],
-        4,
         [
             -2.235346794128418,
             -0.03488197922706604,
@@ -455,7 +438,6 @@ def check_references[on_gpu: Bool = False]() raises:
             0.6601877808570862,
             0.6601877808570862,
         ],
-        False,
         1e-06,
     )
     check_dense_reference[DType.float64, on_gpu](
@@ -642,7 +624,6 @@ def check_references[on_gpu: Bool = False]() raises:
             0.0,
             0.0,
         ],
-        4,
         [
             -0.9860913154797805,
             -1.3804696221142245,
@@ -737,7 +718,6 @@ def check_references[on_gpu: Bool = False]() raises:
             -1.3804696221142245,
             -1.0211753451473264,
         ],
-        False,
         1e-12,
     )
     check_dense_reference[DType.float64, on_gpu](
@@ -924,7 +904,6 @@ def check_references[on_gpu: Bool = False]() raises:
             0.0,
             0.0,
         ],
-        4,
         [
             -0.4612422223551217,
             -0.4437801643447078,
@@ -1019,7 +998,6 @@ def check_references[on_gpu: Bool = False]() raises:
             0.3908406012964597,
             0.6937586595839396,
         ],
-        True,
         1e-12,
     )
     check_dense_reference[DType.float64, on_gpu](
@@ -1206,7 +1184,6 @@ def check_references[on_gpu: Bool = False]() raises:
             0.0,
             0.0,
         ],
-        4,
         [
             -0.5209055818279908,
             0.21436209086247268,
@@ -1301,6 +1278,5 @@ def check_references[on_gpu: Bool = False]() raises:
             0.21436209086247268,
             0.42246857935850457,
         ],
-        False,
         1e-12,
     )

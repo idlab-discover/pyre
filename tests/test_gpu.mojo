@@ -1,6 +1,7 @@
 """GPU semantic, storage, and GTIL acceptance checks (requires a GPU)."""
+from acceptance import stump, check_edges
 from reference_data import check_references
-from balsa import load, Model, ModelBuilder, TreeBuilder, Operator, TaskType
+from balsa import load, ModelBuilder, TreeBuilder, Operator
 from max.gpu.host import DeviceContext
 from pyre import Forest
 from pyre.gpu import GpuForest, GpuBatch, GpuArray, upload, upload_into
@@ -15,118 +16,9 @@ def test_gtil() raises:
     check_references[True]()
 
 
-def stump[
-    dtype: DType
-](op: Int8, default: Bool, classifier: Bool) raises -> Model[dtype]:
-    var builder = ModelBuilder[dtype](
-        num_feature=1, base_scores=[0.25], average_tree_output=True
-    )
-    for _ in range(2):
-        var tree = TreeBuilder[dtype](num_nodes=3)
-        tree.numerical_split(
-            0,
-            feature=0,
-            threshold=0.5,
-            left=1,
-            right=2,
-            op=op,
-            default_left=default,
-        )
-        tree.leaf(1, -1.25)
-        tree.leaf(2, 2.75)
-        builder.add_tree(tree^.build())
-    var model = builder^.build()
-    if classifier:
-        model.task_type = TaskType.BINARY_CLF
-        model.set_postprocessor_name("sigmoid")
-        model.sigmoid_alpha = 0.75
-    return model^
-
-
-def operators[dtype: DType]() raises:
-    var ctx = DeviceContext()
-    var values = [
-        Scalar[dtype](-1),
-        Scalar[dtype](0.5),
-        Scalar[dtype](1),
-        nan[dtype](),
-        -inf[dtype](),
-        inf[dtype](),
-    ]
-    for op in [Operator.EQ, Operator.LT, Operator.LE, Operator.GT, Operator.GE]:
-        for default in [False, True]:
-            var model = stump[dtype](op, default, False)
-            var cpu = Forest(model.copy())
-            var forest = GpuForest.prepare(model, ctx)
-            # Mutation after preparation must not affect device inference.
-            model.trees[0].leaf_value[1] = 999
-            var moved = forest^
-            for rows in [0, 1, 33, 257]:
-                var x = NDArray[dtype](Shape(rows, 1))
-                for row in range(rows):
-                    x.itemset(row, values[row % len(values)])
-                var batch = upload(x, ctx)
-                var moved_batch = batch^
-                var y = moved.predict(moved_batch).to_host()
-                var expected = cpu.predict(x)
-                assert_equal(y.size, rows)
-                for i in range(rows):
-                    assert_equal(y.item(i), expected.item(i))
-
-
-def test_operators_f32() raises:
-    operators[DType.float32]()
-
-
-def test_operators_f64() raises:
-    operators[DType.float64]()
-
-
-def binary[dtype: DType]() raises:
-    var ctx = DeviceContext()
-    var model = stump[dtype](Operator.LT, False, True)
-    for t in range(len(model.trees)):
-        model.trees[t].leaf_value[1] = 0
-        model.trees[t].leaf_value[2] = 0
-    for bias in [Float64(-10000), Float64(0), Float64(10000)]:
-        model.base_scores[0] = bias
-        var f = GpuForest.prepare(model, ctx)
-        for rows in [0, 1, 33, 257]:
-            var host = NDArray[dtype](Shape(rows, 1))
-            for i in range(rows):
-                host.itemset(i, 0)
-            var x = upload(host, ctx)
-            var p = f.predict_proba(x).to_host()
-            assert_equal(p.shape[0], rows)
-            assert_equal(p.shape[1], 2)
-            for threshold in [
-                Scalar[dtype](0),
-                Scalar[dtype](0.5),
-                Scalar[dtype](1),
-            ]:
-                var y = f.predict_class(x, threshold).to_host()
-                for i in range(rows):
-                    var expected = Scalar[dtype](
-                        0.0 if bias < 0 else 1.0 if bias > 0 else 0.5
-                    )
-                    assert_equal(p.item(2 * i + 1), expected)
-                    assert_equal(y.item(i), Int64(expected > threshold))
-            with assert_raises():
-                _ = f.predict_class(x, nan[dtype]())
-            with assert_raises():
-                _ = f.predict_class(x, -0.1)
-            with assert_raises():
-                _ = f.predict_class(x, 1.1)
-            with assert_raises():
-                _ = f.predict(x)
-
-
-def test_binary_f32() raises:
-    binary[DType.float32]()
-
-
-def test_binary_f64() raises:
-    binary[DType.float64]()
+def test_shared_edges() raises:
+    check_edges[DType.float32, True]()
+    check_edges[DType.float64, True]()
 
 
 def test_offsets_capacity_aliasing() raises:
@@ -212,12 +104,14 @@ def test_preparation_and_independent_contexts() raises:
     var model = stump[DType.float64](Operator.GE, True, False)
     var f1 = GpuForest.prepare(model, ctx1)
     var f2 = GpuForest.prepare(model, ctx2)
+    model.trees[0].leaf_value[1] = 999
+    var moved = f1^
     var host = NDArray[DType.float64](Shape(1, 1))
     host.itemset(0, 0.5)
     var x1 = upload(host, ctx1)
     var x2 = upload(host, ctx2)
     for _ in range(3):
-        assert_equal(f1.predict(x1).to_host().item(0), Float64(-1))
+        assert_equal(moved.predict(x1).to_host().item(0), Float64(-1))
         assert_equal(f2.predict(x2).to_host().item(0), Float64(-1))
     for name in ["category", "vector", "multi_target"]:
         var unsupported = load[DType.float64](

@@ -1,7 +1,7 @@
 {
   "treelite": "4.6.1",
   "numpy": "2.2.6",
-  "balsa_commit": "b3a3f1c49e010c6cddbb690fbdb26d1af62827bf",
+  "balsa_commit": "737874f3eae9d95a0517397130f445b303d28cc6",
   "fixtures": [
     {
       "balsa_path": "tests/fixtures/float32_leaf.tl",
