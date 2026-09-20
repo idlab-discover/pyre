@@ -4,6 +4,7 @@ from std.time import perf_counter_ns
 from std.benchmark import keep
 from balsa import load
 from pyre import Forest
+from pyre._cpu import _CPUPlan, _GENERAL, _DIRECT
 from cpu_samples import samples, save
 from numojo import NDArray
 
@@ -29,11 +30,11 @@ def run[dtype: DType](args: List[String]) raises:
     var model = load[dtype](args[1])
     var x = samples[dtype](args[3], Int(args[4]), Int(args[5]))
     var forest = Forest(model^)
-
+    # Development controls validate the route without changing prepared storage.
     if args[10] == "generic":
-        forest._symmetric.enabled = False
+        forest._cpu._use_strategy(_GENERAL)
     elif args[10] == "direct":
-        forest._symmetric.binned = False
+        forest._cpu._use_strategy(_DIRECT)
     elif args[10] != "auto":
         raise Error("Kernel must be auto, direct, or generic")
     if args[7] != "-":

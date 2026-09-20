@@ -15,7 +15,8 @@ Balsa remains independent of Pyre, NuMojo, MAX and GPU execution.
 ## Current integration
 
 `Forest(model^)` consumes a Balsa model. `Forest(model.copy())` retains an
-independently editable source when needed. Pyre borrows tree fields during SIMD
+independently editable source when needed. The private CPU plan owns inspection, routing and execution behind `Forest`.
+It caches an ordered sum for leaf-only forests and borrows tree fields during SIMD
 general traversal. Eligible symmetric CPU forests additionally pack split and leaf
 arrays owned by NuMojo; Pyre does not implement checkpoint loading.
 It uses Balsa's `Operator`, `NodeType`, `TaskType`, `postprocessor_name()` and

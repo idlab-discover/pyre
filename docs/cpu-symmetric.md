@@ -7,6 +7,10 @@ and inference are pure Mojo. Input, output, packed model arrays, and byte scratc
 remain owned by NuMojo. Python is only benchmark orchestration and optional
 CatBoost reference evaluation.
 
+The [CPU planning module](cpu-planning.md) now keeps inspection, routing and
+execution behind the public `Forest` interface and adds broader synthetic
+coverage, including constant forests and depths 12/16.
+
 ## Representation and semantic boundary
 
 After Balsa structural validation, `_Symmetric` recovers each tree level using
@@ -47,7 +51,7 @@ validation are not part of warm prediction timings.
 
 `Forest(model^)`, all four inference APIs, dtype matching, explicit SIMD widths,
 output shapes, contiguous offset views, and argument validation remain supported.
-The compact evaluator executes serially. Nonnegative `num_threads` values remain
+The compact and constant evaluators execute serially. Nonnegative `num_threads` values remain
 accepted but do not schedule compact workers; negative values still raise.
 Existing generic traversal and its scheduler are retained. CPU concurrency policy
 and redesign belong to a subsequent session. GPU files and shared validation are

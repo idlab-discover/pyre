@@ -117,15 +117,15 @@ def audit[dtype: DType](var model: Model[dtype]) raises:
         size_of[_State](),
         sep="\t",
     )
-    packed("packed.features", forest._symmetric.features)
-    packed("packed.thresholds", forest._symmetric.thresholds)
-    packed("packed.defaults", forest._symmetric.defaults)
-    packed("packed.leaves", forest._symmetric.leaves)
-    packed("packed.splits", forest._symmetric.splits)
-    packed("packed.leaf_offsets", forest._symmetric.leaf_offsets)
-    packed("packed.borders", forest._symmetric.borders)
-    packed("packed.border_offsets", forest._symmetric.border_offsets)
-    packed("packed.split_bins", forest._symmetric.split_bins)
+    packed("packed.features", forest._cpu._symmetric.features)
+    packed("packed.thresholds", forest._cpu._symmetric.thresholds)
+    packed("packed.defaults", forest._cpu._symmetric.defaults)
+    packed("packed.leaves", forest._cpu._symmetric.leaves)
+    packed("packed.splits", forest._cpu._symmetric.splits)
+    packed("packed.leaf_offsets", forest._cpu._symmetric.leaf_offsets)
+    packed("packed.borders", forest._cpu._symmetric.borders)
+    packed("packed.border_offsets", forest._cpu._symmetric.border_offsets)
+    packed("packed.split_bins", forest._cpu._symmetric.split_bins)
     print("validated_trees", forest.num_trees(), sep="\t")
 
 

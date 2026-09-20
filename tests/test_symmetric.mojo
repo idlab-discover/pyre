@@ -12,6 +12,7 @@ from numojo import NDArray
 from numojo.core.type_aliases import Shape
 from numojo.core.layout.ndstrides import NDArrayStrides
 from pyre import Forest
+from pyre._cpu import _CPUPlan, _GENERAL, _DIRECT
 
 
 def model[dtype: DType](classifier: Bool = False) raises -> Model[dtype]:
@@ -72,12 +73,10 @@ def check[dtype: DType, width: Int]() raises:
     ]
     for classifier in [False, True]:
         var compact = Forest(model[dtype](classifier))
-        var direct = Forest(model[dtype](classifier))
-        var generic = Forest(model[dtype](classifier))
-        assert_true(compact._symmetric.enabled)
-        assert_true(compact._symmetric.binned)
-        direct._symmetric.binned = False
-        generic._symmetric.enabled = False
+        var direct = _CPUPlan(model[dtype](classifier), strategy=_DIRECT)
+        var generic = _CPUPlan(model[dtype](classifier), strategy=_GENERAL)
+        assert_true(compact._cpu._symmetric.enabled)
+        assert_true(compact._cpu._symmetric.binned)
         for rows in [0, 1, 2, 15, 16, 17, 31, 32, 33, 255, 256, 257, 511, 513]:
             var backing = NDArray[dtype](Shape(rows + 2, 3))
             for i in range(backing.size):
@@ -138,7 +137,7 @@ def test_fallbacks() raises:
         else:
             m.trees[3].threshold[0] = inf[DType.float32]()
         var forest = Forest(m^)
-        assert_false(forest._symmetric.enabled)
+        assert_false(forest._cpu._symmetric.enabled)
     var uneven = TreeBuilder[DType.float32](num_nodes=5)
     uneven.numerical_split(
         0, feature=0, threshold=0, left=1, right=2, op=Operator.LE
@@ -152,7 +151,7 @@ def test_fallbacks() raises:
     var builder = ModelBuilder[DType.float32](num_feature=1)
     builder.add_tree(uneven^.build())
     var forest = Forest(builder^.build())
-    assert_false(forest._symmetric.enabled)
+    assert_false(forest._cpu._symmetric.enabled)
 
 
 def test_border_capacity_and_precision() raises:
@@ -174,10 +173,9 @@ def test_border_capacity_and_precision() raises:
             builder.add_tree(tree^.build())
         var m = builder^.build()
         var forest = Forest(m.copy())
-        var generic = Forest(m^)
-        generic._symmetric.enabled = False
-        assert_true(forest._symmetric.enabled)
-        assert_equal(forest._symmetric.binned, count == 254)
+        var generic = _CPUPlan(m^, strategy=_GENERAL)
+        assert_true(forest._cpu._symmetric.enabled)
+        assert_equal(forest._cpu._symmetric.binned, count == 254)
         var x = NDArray[DType.float64](Shape(257, 1))
         for i in range(257):
             x.itemset(i, Float64(i) * 1e-12 + 0.5)
@@ -208,7 +206,7 @@ def test_permuted_node_numbers() raises:
         tree.leaf(ids[node], Float32(node - 2))
     builder.add_tree(tree^.build())
     var forest = Forest(builder^.build())
-    assert_true(forest._symmetric.enabled)
+    assert_true(forest._cpu._symmetric.enabled)
     var x = NDArray[DType.float32](Shape(4, 2))
     for row in range(4):
         x.itemset(2 * row, Float32(row // 2))
@@ -240,9 +238,8 @@ def test_deeper_trees() raises:
         builder.add_tree(tree^.build())
         var m = builder^.build()
         var forest = Forest(m.copy())
-        var generic = Forest(m^)
-        generic._symmetric.enabled = False
-        assert_true(forest._symmetric.enabled)
+        var generic = _CPUPlan(m^, strategy=_GENERAL)
+        assert_true(forest._cpu._symmetric.enabled)
         var x = NDArray[DType.float32](Shape(33, depth))
         for i in range(x.size):
             x.itemset(i, Float32((i * 7 + i // depth) % 3 - 1))

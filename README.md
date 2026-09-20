@@ -49,6 +49,11 @@ arrays directly. The original model and training metadata remain owned, so this
 reduces hot traversal metadata but does not reduce total resident model memory.
 Do not mutate the forest's private model or packed fields.
 
+CPU inspection, routing and execution live in a private `_CPUPlan`; the public
+`Forest` interface exposes no trainer or kernel selection. Leaf-only forests
+cache their ordered tree sum at construction. See [CPU preparation and
+fixtures](docs/cpu-planning.md).
+
 The compact path supports symmetric numerical LE trees with finite thresholds,
 shared split/default direction at each depth, and depths up to 16. Trees may have
 different depths. Large batches can share feature quantization in feature-major
@@ -76,7 +81,7 @@ feature count. Empty batches and contiguous offset views work; strided input
 requires an explicit contiguous copy. `predict` is regression-only; binary labels
 use their own typed operation.
 
-The compact CPU path currently executes serially. It accepts the existing
+The compact and constant CPU paths currently execute serially. It accepts the existing
 nonnegative `num_threads` argument for API compatibility but does not schedule
 workers. The general CPU evaluator retains its existing concurrency behavior.
 GPU storage, kernels, and dispatch are unchanged.

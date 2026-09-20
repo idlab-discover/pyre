@@ -1,5 +1,9 @@
 # Integrated compact CPU measurements — 2026-09-20
 
+Historical capture: implementation committed as `1a749e7`, before the private
+CPU-plan refactor. See [current planning and synthetic fixtures](../../cpu-planning.md)
+for the subsequent work.
+
 On the captured CatBoost numerical models, automatic compact inference retains
 NuMojo ownership and substantially reduces serial prediction latency. The
 5,000-row, 34-feature, 1,024-depth-8-tree float32 workload falls from **104.604 ms
