@@ -11,6 +11,11 @@ from numojo import NDArray
 from numojo.core.type_aliases import Shape
 
 
+# Internal locality policy; SIMD width and worker partitioning remain independent.
+comptime _ROW_TILE = 256
+comptime _TREE_GROUP = 4
+
+
 struct Forest[dtype: DType = DType.float32](Movable):
     """An owned Balsa model with SIMD CPU inference. Input precision must match.
 
@@ -54,17 +59,25 @@ struct Forest[dtype: DType = DType.float32](Movable):
         ):
             raise Error("Pyre MVP requires C-contiguous input")
 
-    def _block[
+    def _tree_range[
         width: Int, lt_only: Bool
-    ](self, x: NDArray[Self.dtype], row: Int, count: Int) -> SIMD[
-        Self.dtype, width
-    ]:
+    ](
+        self,
+        x: NDArray[Self.dtype],
+        row: Int,
+        count: Int,
+        begin: Int,
+        end: Int,
+        var total: SIMD[Self.dtype, width],
+    ) -> SIMD[Self.dtype, width]:
         comptime assert Self.dtype.is_floating_point()
-        var total = SIMD[Self.dtype, width](0)
+        # Continue the incoming total in original tree order. Independent group
+        # sums would change floating-point association.
         var input = x.unsafe_ptr()
         comptime if width == 1:
             # A scalar fallback avoids masked-gather overhead on one-row calls.
-            for tree in self._model.trees:
+            for tree_id in range(begin, end):
+                ref tree = self._model.trees[tree_id]
                 var node = 0
                 while tree.node_type[node] != NodeType.LEAF:
                     var value = input[
@@ -94,7 +107,8 @@ struct Forest[dtype: DType = DType.float32](Movable):
                 lanes[lane] = Int64(lane)
             var valid = lanes.lt(Int64(count))
             var row_offsets = (lanes + Int64(row)) * Int64(self.num_features())
-            for tree in self._model.trees:
+            for tree_id in range(begin, end):
+                ref tree = self._model.trees[tree_id]
                 var ids = SIMD[DType.int32, width](0)
                 var active = valid
                 while True:
@@ -137,6 +151,11 @@ struct Forest[dtype: DType = DType.float32](Movable):
                     condition = isnan(values).select(defaults, condition)
                     ids = active.select(condition.select(left, right), ids)
                 total += tree.leaf_value.unsafe_ptr().unsafe_gather(ids, valid)
+        return total
+
+    def _finish[
+        width: Int
+    ](self, var total: SIMD[Self.dtype, width]) -> SIMD[Self.dtype, width]:
         if self._model.average_tree_output != 0:
             total /= Scalar[Self.dtype](self.num_trees())
         # Treelite stores base scores as Float64, even for float32 forests.
@@ -213,45 +232,67 @@ struct Forest[dtype: DType = DType.float32](Movable):
         # Each task owns whole SIMD blocks. Model/input captures are borrowed;
         # The executor joins before result storage or either borrow can expire.
         def work(task: Int) {self, x, output, rows, blocks, workers, threshold}:
-            for block in range(
-                blocks * task // workers, blocks * (task + 1) // workers
-            ):
-                var row = block * width
-                var count = min(width, rows - row)
-                var value = SIMD[Self.dtype, width](0)
-                if count == 1:
-                    value[0] = self._block[1, lt_only](x, row, 1)
-                else:
-                    value = self._block[width, lt_only](x, row, count)
-                comptime if mode != 0:
-                    # Stable vector sigmoid; intermediate magnitudes stay <= 1.
-                    comptime assert Self.dtype.is_floating_point()
-                    var z = (
-                        Scalar[Self.dtype](self._model.sigmoid_alpha) * value
-                    )
-                    var e = exp(-abs(z))
-                    value = z.ge(0).select(1 / (1 + e), e / (1 + e))
-                comptime if mode == 1:
-                    comptime for lane in range(width):
-                        if lane < count:
-                            output[unsafe_offset=2 * (row + lane)] = Scalar[
-                                output_dtype
-                            ](1 - value[lane])
-                            output[unsafe_offset=2 * (row + lane) + 1] = Scalar[
-                                output_dtype
-                            ](value[lane])
-                else:
-                    var stored: SIMD[output_dtype, width]
-                    comptime if mode == 2:
-                        stored = value.gt(threshold).cast[output_dtype]()
-                    else:
-                        stored = value.cast[output_dtype]()
-                    if count == width:
-                        output.unsafe_offset(row).unsafe_store(stored)
-                    else:
+            var begin = blocks * task // workers
+            var end = blocks * (task + 1) // workers
+            # Tile inside the existing partition, never partition by tile count.
+            # Each concurrent call owns its scratch until the executor joins.
+            var tile_blocks = max(1, _ROW_TILE // width)
+            var scratch = List[SIMD[Self.dtype, width]](capacity=tile_blocks)
+            for _ in range(tile_blocks):
+                scratch.append(SIMD[Self.dtype, width](0))
+            for tile in range(begin, end, tile_blocks):
+                var size = min(tile_blocks, end - tile)
+                for i in range(size):
+                    scratch[i] = SIMD[Self.dtype, width](0)
+                for group in range(0, self.num_trees(), _TREE_GROUP):
+                    var group_end = min(group + _TREE_GROUP, self.num_trees())
+                    for i in range(size):
+                        var row = (tile + i) * width
+                        var count = min(width, rows - row)
+                        if count == 1:
+                            scratch[i][0] = self._tree_range[1, lt_only](
+                                x, row, 1, group, group_end, scratch[i][0]
+                            )
+                        else:
+                            scratch[i] = self._tree_range[width, lt_only](
+                                x, row, count, group, group_end, scratch[i]
+                            )
+                for i in range(size):
+                    var row = (tile + i) * width
+                    var count = min(width, rows - row)
+                    var value = self._finish(scratch[i])
+                    comptime if mode != 0:
+                        # Stable vector sigmoid; intermediate magnitudes stay <= 1.
+                        comptime assert Self.dtype.is_floating_point()
+                        var z = (
+                            Scalar[Self.dtype](self._model.sigmoid_alpha)
+                            * value
+                        )
+                        var e = exp(-abs(z))
+                        value = z.ge(0).select(1 / (1 + e), e / (1 + e))
+                    comptime if mode == 1:
                         comptime for lane in range(width):
                             if lane < count:
-                                output[unsafe_offset=row + lane] = stored[lane]
+                                output[unsafe_offset=2 * (row + lane)] = Scalar[
+                                    output_dtype
+                                ](1 - value[lane])
+                                output[
+                                    unsafe_offset=2 * (row + lane) + 1
+                                ] = Scalar[output_dtype](value[lane])
+                    else:
+                        var stored: SIMD[output_dtype, width]
+                        comptime if mode == 2:
+                            stored = value.gt(threshold).cast[output_dtype]()
+                        else:
+                            stored = value.cast[output_dtype]()
+                        if count == width:
+                            output.unsafe_offset(row).unsafe_store(stored)
+                        else:
+                            comptime for lane in range(width):
+                                if lane < count:
+                                    output[unsafe_offset=row + lane] = stored[
+                                        lane
+                                    ]
 
         if workers == 1:
             work(0)

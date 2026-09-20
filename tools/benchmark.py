@@ -2,6 +2,8 @@
 
 Example: pixi run benchmark --processes 6 --values 5 --warmups 2 --min-time .15
          --affinity 0-7 -o docs/private/benchmarks/baseline.json
+
+Use --width 0 to measure automatic dispatch separately from explicit SIMD widths.
 """
 import hashlib
 import os
@@ -26,6 +28,8 @@ CASES = [
 
 def add_cmdline(cmd, args):
     cmd.extend(["--binary", args.binary, "--threads", str(args.threads)])
+    if args.width is not None:
+        cmd.extend(["--width", str(args.width)])
     if args.cases:
         cmd.extend(["--cases", args.cases])
 
@@ -35,6 +39,10 @@ def main():
     runner.argparser.add_argument("--binary", default=str(ROOT / "build/benchmark-worker"))
     runner.argparser.add_argument("--threads", type=int, default=1)
     runner.argparser.add_argument("--cases", default="", help="comma-separated case names")
+    runner.argparser.add_argument(
+        "--width", type=int, choices=[0, 1, 4, 8, 16], default=None,
+        help="override SIMD width; 0 benchmarks automatic dispatch",
+    )
     args = runner.parse_args()
     runner.metadata.update({
         "balsa_commit": "737874f3eae9d95a0517397130f445b303d28cc6",
@@ -47,13 +55,14 @@ def main():
     for name, rows, trees, depth, dtype, operation, width in CASES:
         if selected and name not in selected:
             continue
+        width = args.width if args.width is not None else width
         command = [args.binary, str(rows), str(trees), str(depth), dtype, operation, str(width), str(args.threads)]
         def time_func(loops, command=command):
             proc = subprocess.run(command + [str(loops)], cwd=ROOT, text=True, capture_output=True, check=True)
             return float(proc.stdout.strip())
         runner.bench_time_func(name, time_func, metadata={
             "rows": rows, "trees": 4 if depth == 0 else trees, "depth": 3 if depth == 0 else depth,
-            "precision": dtype, "operation": operation, "simd_width": width,
+            "precision": dtype, "operation": operation, "simd_width": width, "simd_dispatch": "automatic" if width == 0 else "explicit",
         })
 
 if __name__ == "__main__":

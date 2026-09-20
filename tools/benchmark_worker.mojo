@@ -9,13 +9,45 @@ from numojo import NDArray
 from numojo.core.type_aliases import Shape
 
 
-def execute[dtype: DType, width: Int](rows: Int, trees: Int, depth: Int, operation: String, loops: Int, threads: Int) raises:
+def predict_proba[
+    dtype: DType, width: Int
+](forest: Forest[dtype], x: NDArray[dtype], threads: Int) raises -> NDArray[
+    dtype
+]:
+    comptime if width == 0:
+        return forest.predict_proba(x, num_threads=threads)
+    else:
+        return forest.predict_proba[width](x, num_threads=threads)
+
+
+def predict_margin[
+    dtype: DType, width: Int
+](forest: Forest[dtype], x: NDArray[dtype], threads: Int) raises -> NDArray[
+    dtype
+]:
+    comptime if width == 0:
+        return forest.predict_margin(x, num_threads=threads)
+    else:
+        return forest.predict_margin[width](x, num_threads=threads)
+
+
+def execute[
+    dtype: DType, width: Int
+](
+    rows: Int,
+    trees: Int,
+    depth: Int,
+    operation: String,
+    loops: Int,
+    threads: Int,
+) raises:
     var classifier = operation == "proba"
     var builder = ModelBuilder[dtype](
         num_feature=8,
         task_type=TaskType.BINARY_CLF if classifier else TaskType.REGRESSOR,
         postprocessor="sigmoid" if classifier else "identity",
-        base_scores=[0.125], average_tree_output=True,
+        base_scores=[0.125],
+        average_tree_output=True,
     )
     var nodes = (1 << (depth + 1)) - 1
     var interior = (1 << depth) - 1
@@ -23,17 +55,27 @@ def execute[dtype: DType, width: Int](rows: Int, trees: Int, depth: Int, operati
         var tree = TreeBuilder[dtype](num_nodes=nodes)
         for node in range(nodes):
             if node < interior:
-                tree.numerical_split(node, feature=Int32((node + tree_id) % 8),
-                    threshold=Scalar[dtype]((node * 7 + tree_id * 3) % 19 - 9) / 8,
+                tree.numerical_split(
+                    node,
+                    feature=Int32((node + tree_id) % 8),
+                    threshold=Scalar[dtype]((node * 7 + tree_id * 3) % 19 - 9)
+                    / 8,
                     op=Operator.LE if tree_id % 2 else Operator.LT,
-                    left=Int32(2 * node + 1), right=Int32(2 * node + 2),
-                    default_left=tree_id % 2 == 0)
+                    left=Int32(2 * node + 1),
+                    right=Int32(2 * node + 2),
+                    default_left=tree_id % 2 == 0,
+                )
             else:
-                tree.leaf(node, Scalar[dtype]((node * 13 + tree_id * 7) % 31 - 15) / 16)
+                tree.leaf(
+                    node,
+                    Scalar[dtype]((node * 13 + tree_id * 7) % 31 - 15) / 16,
+                )
         builder.add_tree(tree^.build())
     var model = builder^.build()
     if depth == 0:
-        model = load[dtype]("build/balsa-reference/tests/fixtures/frameworks/xgboost_regression.tl")
+        model = load[dtype](
+            "build/balsa-reference/tests/fixtures/frameworks/xgboost_regression.tl"
+        )
     var forest = Forest(model^)
     var x = NDArray[dtype](Shape(rows, forest.num_features()))
     for i in range(rows * forest.num_features()):
@@ -43,25 +85,37 @@ def execute[dtype: DType, width: Int](rows: Int, trees: Int, depth: Int, operati
     # Warm code/data/allocator and (later) the shared thread pool before timing.
     for _ in range(3):
         if classifier:
-            var result = forest.predict_proba(x, num_threads=threads)
+            var result = predict_proba[dtype, width](forest, x, threads)
             keep(result)
         else:
-            var result = forest.predict_margin[width](x, num_threads=threads)
+            var result = predict_margin[dtype, width](forest, x, threads)
             keep(result)
     var start = perf_counter_ns()
     for _ in range(loops):
         if classifier:
-            var result = forest.predict_proba(x, num_threads=threads)
+            var result = predict_proba[dtype, width](forest, x, threads)
             keep(result)
         else:
-            var result = forest.predict_margin[width](x, num_threads=threads)
+            var result = predict_margin[dtype, width](forest, x, threads)
             keep(result)
     var elapsed = perf_counter_ns() - start
     print(Float64(elapsed) / 1e9)
 
 
-def dispatch[dtype: DType](rows: Int, trees: Int, depth: Int, operation: String, loops: Int, width: Int, threads: Int) raises:
-    if width == 1:
+def dispatch[
+    dtype: DType
+](
+    rows: Int,
+    trees: Int,
+    depth: Int,
+    operation: String,
+    loops: Int,
+    width: Int,
+    threads: Int,
+) raises:
+    if width == 0:
+        execute[dtype, 0](rows, trees, depth, operation, loops, threads)
+    elif width == 1:
         execute[dtype, 1](rows, trees, depth, operation, loops, threads)
     elif width == 4:
         execute[dtype, 4](rows, trees, depth, operation, loops, threads)
@@ -76,8 +130,26 @@ def dispatch[dtype: DType](rows: Int, trees: Int, depth: Int, operation: String,
 def main() raises:
     var args = argv()
     if len(args) != 9:
-        raise Error("Usage: worker ROWS TREES DEPTH DTYPE OP WIDTH THREADS LOOPS")
+        raise Error(
+            "Usage: worker ROWS TREES DEPTH DTYPE OP WIDTH THREADS LOOPS"
+        )
     if args[4] == "float32":
-        dispatch[DType.float32](Int(args[1]), Int(args[2]), Int(args[3]), String(args[5]), Int(args[8]), Int(args[6]), Int(args[7]))
+        dispatch[DType.float32](
+            Int(args[1]),
+            Int(args[2]),
+            Int(args[3]),
+            String(args[5]),
+            Int(args[8]),
+            Int(args[6]),
+            Int(args[7]),
+        )
     else:
-        dispatch[DType.float64](Int(args[1]), Int(args[2]), Int(args[3]), String(args[5]), Int(args[8]), Int(args[6]), Int(args[7]))
+        dispatch[DType.float64](
+            Int(args[1]),
+            Int(args[2]),
+            Int(args[3]),
+            String(args[5]),
+            Int(args[8]),
+            Int(args[6]),
+            Int(args[7]),
+        )

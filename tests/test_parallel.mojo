@@ -416,5 +416,90 @@ def test_vector_sigmoid_extremes() raises:
     _check_sigmoid_extremes[DType.float64]()
 
 
+def _check_tiled_accumulation[dtype: DType, width: Int]() raises:
+    var magnitudes = [
+        Scalar[dtype](1e20),
+        Scalar[dtype](1),
+        Scalar[dtype](-1e20),
+        Scalar[dtype](3),
+    ]
+    var inputs = [
+        Scalar[dtype](-1),
+        Scalar[dtype](0.5),
+        nan[dtype](),
+        inf[dtype](),
+        -inf[dtype](),
+    ]
+    for trees in [3, 4, 5, 7, 8, 9, 63, 64, 65]:
+        for average in [False, True]:
+            var builder = ModelBuilder[dtype](
+                num_feature=1,
+                base_scores=[1.000000059604644775390625],
+                average_tree_output=average,
+            )
+            for t in range(trees):
+                var tree = TreeBuilder[dtype](num_nodes=3)
+                tree.numerical_split(
+                    0,
+                    feature=0,
+                    threshold=0.5,
+                    left=1,
+                    right=2,
+                    op=Operator.LT,
+                    default_left=True,
+                )
+                tree.leaf(1, magnitudes[t % 4])
+                tree.leaf(2, -magnitudes[t % 4])
+                builder.add_tree(tree^.build())
+            var forest = Forest(builder^.build())
+            # Every complete four-tree sequence ends at 3, not 3 * groups:
+            # the next 1e20 discards the preceding 3 before cancellation.
+            var positive = Scalar[dtype](1e20)
+            if trees % 4 == 0:
+                positive = 3
+            elif trees % 4 == 3:
+                positive = 0
+            for rows in [0, 1, 15, 16, 17, 255, 256, 257, 513, 2053]:
+                var backing = NDArray[dtype](Shape(rows + 7, 1))
+                for i in range(backing.size):
+                    backing.itemset(i, inputs[i % 5])
+                var x = backing.view_with_layout(
+                    Shape(rows, 1), NDArrayStrides(1, 1), 7
+                )
+                for workers in [1, 4, 8, 0]:
+                    var result: NDArray[dtype]
+                    comptime if width == 0:
+                        result = forest.predict(x, num_threads=workers)
+                    else:
+                        result = forest.predict[width](x, num_threads=workers)
+                    assert_equal(result.size, rows)
+                    for row in range(rows):
+                        var pattern = (row + 7) % 5
+                        var expected = (
+                            positive if pattern == 0
+                            or pattern == 2
+                            or pattern == 4 else -positive
+                        )
+                        if average:
+                            expected /= Scalar[dtype](trees)
+                        expected = Scalar[dtype](
+                            Float64(expected) + 1.000000059604644775390625
+                        )
+                        assert_equal(result.item(row), expected)
+
+
+def test_tiled_accumulation_order_and_boundaries() raises:
+    _check_tiled_accumulation[DType.float32, 0]()
+    _check_tiled_accumulation[DType.float32, 1]()
+    _check_tiled_accumulation[DType.float32, 4]()
+    _check_tiled_accumulation[DType.float32, 8]()
+    _check_tiled_accumulation[DType.float32, 16]()
+    _check_tiled_accumulation[DType.float64, 0]()
+    _check_tiled_accumulation[DType.float64, 1]()
+    _check_tiled_accumulation[DType.float64, 4]()
+    _check_tiled_accumulation[DType.float64, 8]()
+    _check_tiled_accumulation[DType.float64, 16]()
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

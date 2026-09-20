@@ -92,6 +92,16 @@ LT-only kernel; mixed/EQ/LE/GT/GE forests retain general semantics. Leaf metadat
 does not affect dispatch. No model repacking or runtime code generation occurs.
 Run `pixi run assembly` to inspect vector code generation.
 
+Within each worker's row partition, CPU traversal uses 256-row tiles and consecutive
+four-tree groups to reuse model data across rows. Each row's running total carries
+through every group in original tree order; averaging, base score and output
+transform run once afterward. Scratch is private to each worker call and reused
+across its tiles: 1 KiB for Float32 or 2 KiB for Float64 at widths up to 256. Wider
+explicit widths use one SIMD block per tile. The policy favors larger batches and
+deeper forests; one-row calls can pay extra allocation and loop overhead. Tile sizes
+are internal constants, and SIMD selection and worker partitioning are unchanged.
+
+
 Supported: float32 and float64 numerical scalar leaves; EQ/LT/LE/GT/GE; NaN default
 routing; root-only/uneven-depth trees; single-output regression/identity and
 binary/sigmoid; averaging, base scores, sigmoid alpha and stable probabilities.
