@@ -10,7 +10,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 GROUPS = {"containers", "inference", "metadata", "unsupported_semantics",
-          "statistics", "extensions", "wrapper"}
+          "statistics", "extensions", "wrapper", "packed_cpu"}
 
 
 def sha256(path):

@@ -1,0 +1,380 @@
+[
+  {
+    "case": "f34-d4",
+    "dtype": "float32",
+    "rows": 5000,
+    "kernel": "auto",
+    "exact": true
+  },
+  {
+    "case": "f34-d4",
+    "dtype": "float32",
+    "rows": 5000,
+    "kernel": "direct",
+    "exact": true
+  },
+  {
+    "case": "f34-d4",
+    "dtype": "float32",
+    "rows": 5000,
+    "kernel": "generic",
+    "exact": true
+  },
+  {
+    "case": "f34-d4",
+    "dtype": "float64",
+    "rows": 5000,
+    "kernel": "auto",
+    "exact": true
+  },
+  {
+    "case": "f34-d4",
+    "dtype": "float64",
+    "rows": 5000,
+    "kernel": "direct",
+    "exact": true
+  },
+  {
+    "case": "f34-d4",
+    "dtype": "float64",
+    "rows": 5000,
+    "kernel": "generic",
+    "exact": true
+  },
+  {
+    "case": "f34-d8",
+    "dtype": "float32",
+    "rows": 1,
+    "kernel": "auto",
+    "exact": true
+  },
+  {
+    "case": "f34-d8",
+    "dtype": "float32",
+    "rows": 1,
+    "kernel": "direct",
+    "exact": true
+  },
+  {
+    "case": "f34-d8",
+    "dtype": "float32",
+    "rows": 1,
+    "kernel": "generic",
+    "exact": true
+  },
+  {
+    "case": "f34-d8",
+    "dtype": "float32",
+    "rows": 32,
+    "kernel": "auto",
+    "exact": true
+  },
+  {
+    "case": "f34-d8",
+    "dtype": "float32",
+    "rows": 32,
+    "kernel": "direct",
+    "exact": true
+  },
+  {
+    "case": "f34-d8",
+    "dtype": "float32",
+    "rows": 32,
+    "kernel": "generic",
+    "exact": true
+  },
+  {
+    "case": "f34-d8",
+    "dtype": "float32",
+    "rows": 256,
+    "kernel": "auto",
+    "exact": true
+  },
+  {
+    "case": "f34-d8",
+    "dtype": "float32",
+    "rows": 256,
+    "kernel": "direct",
+    "exact": true
+  },
+  {
+    "case": "f34-d8",
+    "dtype": "float32",
+    "rows": 256,
+    "kernel": "generic",
+    "exact": true
+  },
+  {
+    "case": "f34-d8",
+    "dtype": "float32",
+    "rows": 1024,
+    "kernel": "auto",
+    "exact": true
+  },
+  {
+    "case": "f34-d8",
+    "dtype": "float32",
+    "rows": 1024,
+    "kernel": "direct",
+    "exact": true
+  },
+  {
+    "case": "f34-d8",
+    "dtype": "float32",
+    "rows": 1024,
+    "kernel": "generic",
+    "exact": true
+  },
+  {
+    "case": "f34-d8",
+    "dtype": "float32",
+    "rows": 5000,
+    "kernel": "auto",
+    "exact": true
+  },
+  {
+    "case": "f34-d8",
+    "dtype": "float32",
+    "rows": 5000,
+    "kernel": "direct",
+    "exact": true
+  },
+  {
+    "case": "f34-d8",
+    "dtype": "float32",
+    "rows": 5000,
+    "kernel": "generic",
+    "exact": true
+  },
+  {
+    "case": "f34-d8",
+    "dtype": "float64",
+    "rows": 1,
+    "kernel": "auto",
+    "exact": true
+  },
+  {
+    "case": "f34-d8",
+    "dtype": "float64",
+    "rows": 1,
+    "kernel": "direct",
+    "exact": true
+  },
+  {
+    "case": "f34-d8",
+    "dtype": "float64",
+    "rows": 1,
+    "kernel": "generic",
+    "exact": true
+  },
+  {
+    "case": "f34-d8",
+    "dtype": "float64",
+    "rows": 32,
+    "kernel": "auto",
+    "exact": true
+  },
+  {
+    "case": "f34-d8",
+    "dtype": "float64",
+    "rows": 32,
+    "kernel": "direct",
+    "exact": true
+  },
+  {
+    "case": "f34-d8",
+    "dtype": "float64",
+    "rows": 32,
+    "kernel": "generic",
+    "exact": true
+  },
+  {
+    "case": "f34-d8",
+    "dtype": "float64",
+    "rows": 256,
+    "kernel": "auto",
+    "exact": true
+  },
+  {
+    "case": "f34-d8",
+    "dtype": "float64",
+    "rows": 256,
+    "kernel": "direct",
+    "exact": true
+  },
+  {
+    "case": "f34-d8",
+    "dtype": "float64",
+    "rows": 256,
+    "kernel": "generic",
+    "exact": true
+  },
+  {
+    "case": "f34-d8",
+    "dtype": "float64",
+    "rows": 1024,
+    "kernel": "auto",
+    "exact": true
+  },
+  {
+    "case": "f34-d8",
+    "dtype": "float64",
+    "rows": 1024,
+    "kernel": "direct",
+    "exact": true
+  },
+  {
+    "case": "f34-d8",
+    "dtype": "float64",
+    "rows": 1024,
+    "kernel": "generic",
+    "exact": true
+  },
+  {
+    "case": "f34-d8",
+    "dtype": "float64",
+    "rows": 5000,
+    "kernel": "auto",
+    "exact": true
+  },
+  {
+    "case": "f34-d8",
+    "dtype": "float64",
+    "rows": 5000,
+    "kernel": "direct",
+    "exact": true
+  },
+  {
+    "case": "f34-d8",
+    "dtype": "float64",
+    "rows": 5000,
+    "kernel": "generic",
+    "exact": true
+  },
+  {
+    "case": "f34-d8-t64",
+    "dtype": "float32",
+    "rows": 5000,
+    "kernel": "auto",
+    "exact": true
+  },
+  {
+    "case": "f34-d8-t64",
+    "dtype": "float32",
+    "rows": 5000,
+    "kernel": "direct",
+    "exact": true
+  },
+  {
+    "case": "f34-d8-t64",
+    "dtype": "float32",
+    "rows": 5000,
+    "kernel": "generic",
+    "exact": true
+  },
+  {
+    "case": "f34-d8-t64",
+    "dtype": "float64",
+    "rows": 5000,
+    "kernel": "auto",
+    "exact": true
+  },
+  {
+    "case": "f34-d8-t64",
+    "dtype": "float64",
+    "rows": 5000,
+    "kernel": "direct",
+    "exact": true
+  },
+  {
+    "case": "f34-d8-t64",
+    "dtype": "float64",
+    "rows": 5000,
+    "kernel": "generic",
+    "exact": true
+  },
+  {
+    "case": "f34-d8-t256",
+    "dtype": "float32",
+    "rows": 5000,
+    "kernel": "auto",
+    "exact": true
+  },
+  {
+    "case": "f34-d8-t256",
+    "dtype": "float32",
+    "rows": 5000,
+    "kernel": "direct",
+    "exact": true
+  },
+  {
+    "case": "f34-d8-t256",
+    "dtype": "float32",
+    "rows": 5000,
+    "kernel": "generic",
+    "exact": true
+  },
+  {
+    "case": "f34-d8-t256",
+    "dtype": "float64",
+    "rows": 5000,
+    "kernel": "auto",
+    "exact": true
+  },
+  {
+    "case": "f34-d8-t256",
+    "dtype": "float64",
+    "rows": 5000,
+    "kernel": "direct",
+    "exact": true
+  },
+  {
+    "case": "f34-d8-t256",
+    "dtype": "float64",
+    "rows": 5000,
+    "kernel": "generic",
+    "exact": true
+  },
+  {
+    "case": "f82-d8",
+    "dtype": "float32",
+    "rows": 5000,
+    "kernel": "auto",
+    "exact": true
+  },
+  {
+    "case": "f82-d8",
+    "dtype": "float32",
+    "rows": 5000,
+    "kernel": "direct",
+    "exact": true
+  },
+  {
+    "case": "f82-d8",
+    "dtype": "float32",
+    "rows": 5000,
+    "kernel": "generic",
+    "exact": true
+  },
+  {
+    "case": "f82-d8",
+    "dtype": "float64",
+    "rows": 5000,
+    "kernel": "auto",
+    "exact": true
+  },
+  {
+    "case": "f82-d8",
+    "dtype": "float64",
+    "rows": 5000,
+    "kernel": "direct",
+    "exact": true
+  },
+  {
+    "case": "f82-d8",
+    "dtype": "float64",
+    "rows": 5000,
+    "kernel": "generic",
+    "exact": true
+  }
+]

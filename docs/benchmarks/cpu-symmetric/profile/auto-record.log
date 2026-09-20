@@ -1,0 +1,5 @@
+10.956024918
+Events disabled
+Events enabled
+[ perf record: Woken up 362 times to write data ]
+[ perf record: Captured and wrote 0.359 MB build/symmetric-profile/auto.data (9279 samples) ]

@@ -1,6 +1,6 @@
 # Model storage accounting
 
-Measure the Balsa storage retained by a newly constructed CPU `Forest`:
+Measure the Balsa storage and compact CPU array payload retained by a newly constructed CPU `Forest`:
 
 ```sh
 pixi run prepare
@@ -29,21 +29,23 @@ hashes, worker hash, and Balsa/Pyre/tool source hashes.
 | `metadata` | Model attributes, postprocessor text, target/class IDs and shapes |
 | `extensions` | Extension list slots, names and payloads; Pyre currently rejects nonempty extensions |
 | `containers` | Inline model object and tree-list slots, including their embedded list headers |
+| `packed_cpu` | NuMojo compact CPU array payloads; separate from the retained Balsa traversal arrays |
 | `wrapper` | Additional inline Forest fields and the executor's initial state allocation |
 
-Every allocation is counted once: headers embedded in a tree or extension are
+Each enumerated payload allocation is counted once: headers embedded in a tree or extension are
 already included in its parent list's slots. Reserved unused slots are included
 only in capacity bytes; child allocations are counted only for live elements.
 The initial executor state is measured through Pyre's private `_State` type, so
 this development tool must be revalidated when executor ownership changes.
 
 These are source-level storage accounts, **not RSS or allocator measurements**.
-Allocator headers, allocator size-class rounding, fragmentation, freed decode
+NuMojo heap control/shape metadata, allocator headers, allocator size-class
+rounding, fragmentation, freed decode
 buffers, stack temporaries, process/runtime memory and later execution contexts
 are excluded. A serialized checkpoint's file size is reported separately.
 
-The inference group is the payload of today's arrays, not a proposed compact
-layout or a lower bound. Essential scalar settings (feature count, averaging,
+The inference group is the payload of the retained Balsa arrays. The separate
+packed_cpu group is additional storage, not a replacement or a lower bound. Essential scalar settings (feature count, averaging,
 task and sigmoid alpha) are embedded in the model object. Some metadata is needed
 for construction-time validation. Removing whole groups in place would violate
 Balsa's model invariants; a future serving representation must preserve required

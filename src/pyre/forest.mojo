@@ -6,6 +6,7 @@ from std.runtime import initialize_runtime
 from std.runtime.asyncrt import parallelism_level
 from ._executor import _Executor
 from ._validation import validate_inference
+from ._symmetric import _Symmetric
 from balsa import Model, NodeType, Operator, TaskType
 from numojo import NDArray
 from numojo.core.type_aliases import Shape
@@ -24,16 +25,18 @@ struct Forest[dtype: DType = DType.float32](Movable):
     """
 
     var _model: Model[Self.dtype]
+    var _symmetric: _Symmetric[Self.dtype]
     var _lt_only: Bool
     var _executor: _Executor
 
     def __init__(out self, var model: Model[Self.dtype]) raises:
-        """Validate inference support, then take ownership without repacking.
+        """Validate support, recover compact CPU trees, then take ownership.
 
         Pass model^ to transfer an existing model, or model.copy() to retain an
         independently mutable source. Balsa remains responsible for structure.
         """
         var lt_only = validate_inference(model)
+        self._symmetric = _Symmetric(model)
         self._lt_only = lt_only
         self._model = model^
         self._executor = _Executor()
@@ -197,6 +200,14 @@ struct Forest[dtype: DType = DType.float32](Movable):
         num_threads: Int,
         threshold: Scalar[Self.dtype] = 0.5,
     ) raises -> NDArray[output_dtype]:
+        if self._symmetric.enabled:
+            if self._symmetric.binned and x.ndim == 2 and x.shape[0] >= 256:
+                return self._predict_impl[width, output_dtype, mode, False, 2](
+                    x, num_threads, threshold
+                )
+            return self._predict_impl[width, output_dtype, mode, False, 1](
+                x, num_threads, threshold
+            )
         # Inspect the immutable model once at construction, dispatch once per
         # prediction. The LT kernel has no operator loads or operator dispatch.
         if self._lt_only:
@@ -208,7 +219,11 @@ struct Forest[dtype: DType = DType.float32](Movable):
         )
 
     def _predict_impl[
-        width: Int, output_dtype: DType, mode: Int, lt_only: Bool
+        width: Int,
+        output_dtype: DType,
+        mode: Int,
+        lt_only: Bool,
+        compact: Int = 0,
     ](
         self,
         x: NDArray[Self.dtype],
@@ -227,11 +242,29 @@ struct Forest[dtype: DType = DType.float32](Movable):
             result = NDArray[output_dtype](Shape(rows))
         var output = result.unsafe_ptr()
         var blocks = (rows + width - 1) // width
-        var workers = self._workers(rows, blocks, num_threads)
+        var workers: Int
+        comptime if compact != 0:
+            if num_threads < 0:
+                raise Error(
+                    "num_threads must be nonnegative (0 selects automatic)"
+                )
+            # Compact scheduling is serial until the separate concurrency work.
+            workers = 1
+        else:
+            workers = self._workers(rows, blocks, num_threads)
+
+        var bins = NDArray[DType.uint8](Shape(0))
+        comptime if compact == 2:
+            bins = NDArray[DType.uint8](
+                Shape(self.num_features(), max(width, _ROW_TILE))
+            )
+        var bin_output = bins.unsafe_ptr()
 
         # Each task owns whole SIMD blocks. Model/input captures are borrowed;
         # The executor joins before result storage or either borrow can expire.
-        def work(task: Int) {self, x, output, rows, blocks, workers, threshold}:
+        def work(
+            task: Int,
+        ) {self, x, output, rows, blocks, workers, threshold, bin_output}:
             var begin = blocks * task // workers
             var end = blocks * (task + 1) // workers
             # Tile inside the existing partition, never partition by tile count.
@@ -242,6 +275,14 @@ struct Forest[dtype: DType = DType.float32](Movable):
                 scratch.append(SIMD[Self.dtype, width](0))
             for tile in range(begin, end, tile_blocks):
                 var size = min(tile_blocks, end - tile)
+                comptime if compact == 2:
+                    self._symmetric.prepare[width](
+                        x,
+                        bin_output,
+                        tile * width,
+                        min(size * width, rows - tile * width),
+                        tile_blocks * width,
+                    )
                 for i in range(size):
                     scratch[i] = SIMD[Self.dtype, width](0)
                 for group in range(0, self.num_trees(), _TREE_GROUP):
@@ -249,14 +290,29 @@ struct Forest[dtype: DType = DType.float32](Movable):
                     for i in range(size):
                         var row = (tile + i) * width
                         var count = min(width, rows - row)
-                        if count == 1:
-                            scratch[i][0] = self._tree_range[1, lt_only](
-                                x, row, 1, group, group_end, scratch[i][0]
+                        comptime if compact != 0:
+                            scratch[i] = self._symmetric.tree_range[
+                                width, compact == 2
+                            ](
+                                x,
+                                bin_output,
+                                row,
+                                i * width,
+                                count,
+                                tile_blocks * width,
+                                group,
+                                group_end,
+                                scratch[i],
                             )
                         else:
-                            scratch[i] = self._tree_range[width, lt_only](
-                                x, row, count, group, group_end, scratch[i]
-                            )
+                            if count == 1:
+                                scratch[i][0] = self._tree_range[1, lt_only](
+                                    x, row, 1, group, group_end, scratch[i][0]
+                                )
+                            else:
+                                scratch[i] = self._tree_range[width, lt_only](
+                                    x, row, count, group, group_end, scratch[i]
+                                )
                 for i in range(size):
                     var row = (tile + i) * width
                     var count = min(width, rows - row)

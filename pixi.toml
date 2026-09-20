@@ -21,7 +21,9 @@ benchmark-gpu = { cmd = "python tools/benchmark_gpu.py", depends-on = ["benchmar
 gpu-corpus-build = { cmd = "mojo build -I build/balsa-reference/src tools/generate_gpu_model.mojo -o build/generate-gpu-model", depends-on = ["prepare"] }
 test-parallel = { cmd = "mojo run -I src -I build/balsa-reference/src -I tests tests/test_parallel.mojo", depends-on = ["prepare"] }
 test-specialization = { cmd = "mojo run -I src -I build/balsa-reference/src tests/test_specialization.mojo", depends-on = ["prepare"] }
-check = { depends-on = ["build", "package", "test", "test-parallel", "test-specialization"] }
+test-symmetric = { cmd = "mojo run -I src -I build/balsa-reference/src tests/test_symmetric.mojo", depends-on = ["prepare"] }
+benchmark-symmetric-build = { cmd = "mojo build -I src -I build/balsa-reference/src tools/benchmark_symmetric_worker.mojo -o build/benchmark-symmetric-worker", depends-on = ["prepare"] }
+check = { depends-on = ["test-symmetric", "build", "package", "test", "test-parallel", "test-specialization"] }
 fmt = "mojo format src examples tests"
 assembly = { cmd = "mojo build -I src -I build/balsa-reference/src --emit asm examples/predict.mojo -o build/predict.s", depends-on = ["prepare"] }
 oracle-generate = { cmd = "pixi run --manifest-path build/balsa-reference/pixi.toml -e oracle python tools/generate_references.py", depends-on = ["prepare"] }

@@ -1,0 +1,17 @@
+# To display the perf.data header info, please use --header/--header-only options.
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 9K of event 'cycles:u'
+# Event count (approx.): 46395000000
+#
+# Overhead  Command          Shared Object                Symbol
+# ........  ...............  ...........................  ....................................................................................................................................
+#
+    99.88%  benchmark-symme  benchmark-symmetric-worker   [.] pyre::forest::work(::SIMD[::DType(int), ::SIMDLength(1)])`0x2,width=16,dtype=f32,compact=2,mode=0,lt_only=false,output_dtype=f32
+
+
+#
+# (Tip: To see call chains by final symbol taking CPU time (bottom up) use perf report -G)
+#

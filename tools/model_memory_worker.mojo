@@ -4,6 +4,7 @@ from balsa import Model, Tree, load_auto
 from balsa.model import Extension
 from pyre import Forest
 from pyre._executor import _State
+from numojo import NDArray
 
 
 def field[T: Copyable](name: String, group: String, values: List[T]):
@@ -14,6 +15,13 @@ def field[T: Copyable](name: String, group: String, values: List[T]):
         values.capacity() * size_of[T](),
         sep="\t",
     )
+
+
+def packed[dtype: DType](name: String, values: NDArray[dtype]):
+    # These arrays are allocated at exactly their logical size. NDArray inline
+    # headers are already in forest.inline; allocator/control metadata excluded.
+    var size = values.size * size_of[Scalar[dtype]]()
+    print(name, "packed_cpu", size, size, sep="\t")
 
 
 def extensions(name: String, values: List[Extension]):
@@ -109,6 +117,15 @@ def audit[dtype: DType](var model: Model[dtype]) raises:
         size_of[_State](),
         sep="\t",
     )
+    packed("packed.features", forest._symmetric.features)
+    packed("packed.thresholds", forest._symmetric.thresholds)
+    packed("packed.defaults", forest._symmetric.defaults)
+    packed("packed.leaves", forest._symmetric.leaves)
+    packed("packed.splits", forest._symmetric.splits)
+    packed("packed.leaf_offsets", forest._symmetric.leaf_offsets)
+    packed("packed.borders", forest._symmetric.borders)
+    packed("packed.border_offsets", forest._symmetric.border_offsets)
+    packed("packed.split_bins", forest._symmetric.split_bins)
     print("validated_trees", forest.num_trees(), sep="\t")
 
 
