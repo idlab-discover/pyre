@@ -1,0 +1,156 @@
+{
+  "sha256": {
+    "/home/strgenix/postdoc/projects/nvidiads/pyre/build/benchmark-cpu-shapes-worker": "591c8b524d33ae624e7a2b8aded41de3b5572dc36063b77b9f63928ecb04980b",
+    "/home/strgenix/postdoc/projects/nvidiads/pyre/tools/benchmark_cpu_shapes.py": "f8e8d44aa51b71538d5aa43c23d9afaa049242a0571572b36fd66acdf086eac7",
+    "tools/benchmark_cpu_shapes_worker.mojo": "398a065b5656ab8fcad06f226b424ab277d3b5a475323be1d2afa955afbecce0",
+    "tests/cpu_fixtures.mojo": "9464812e43aa1bad7dc310bdac28d25f687742859a095ed745a25135395ab80f",
+    "pixi.lock": "6a89802b0a771faf646cc0bede12c7466844f500b35f3634293d2336efafa2ee",
+    "src/pyre/__init__.mojo": "067e65555fa33235c2751337c0d2da0683486411ec158c0284fbbe7bc6e9605b",
+    "src/pyre/_cpu.mojo": "7be41c3cd8c770b1487d9f71e438ddb300a2007c0e053f63de7e568d0c6418a5",
+    "src/pyre/_executor.mojo": "e021ee9ba13f8d880bbc0ab262e22ce24650581d5f7b6a09a9535e478e393046",
+    "src/pyre/_gpu_kernel.mojo": "f5726bddda547aae2c99bdc0ac20f9c386bec32307f359a494495bd263b51a1d",
+    "src/pyre/_gpu_storage.mojo": "24315dcc1a77beb7ac45a77464ccffb9b9947c348f7637a5708f5cdbf767b8e3",
+    "src/pyre/_symmetric.mojo": "463c05eefcec26818fa2a9c2a53aff6b64f6e778f389380ef9e587379f2b7e00",
+    "src/pyre/_validation.mojo": "30c3024e570475da38647db3f25c7c72e26a07ca0fe2b1b16f1ff54354d09a54",
+    "src/pyre/accelerator.mojo": "13862bd9d80c3ecd485099f5b7bc85a219f0053d2c9aeef8dff72f9156cbd295",
+    "src/pyre/forest.mojo": "e69e987e5957f36ea77bdba250f2c3e2fc1332c81e83be65bd91e2f173bc1e4c",
+    "src/pyre/gpu.mojo": "6a5b9624c90541212680b3a822ff2eeb741bbacd4311a71e98cdbb05f5b4b332"
+  },
+  "affinity": [
+    2
+  ],
+  "cases": [
+    [
+      "roots",
+      4096,
+      0,
+      0,
+      8
+    ],
+    [
+      "roots",
+      4096,
+      0,
+      64,
+      8
+    ],
+    [
+      "stumps",
+      16,
+      1,
+      16,
+      8
+    ],
+    [
+      "stumps",
+      1024,
+      1,
+      64,
+      8
+    ],
+    [
+      "symmetric",
+      128,
+      4,
+      16,
+      8
+    ],
+    [
+      "symmetric",
+      128,
+      8,
+      16,
+      8
+    ],
+    [
+      "symmetric",
+      4,
+      12,
+      16,
+      2
+    ],
+    [
+      "symmetric",
+      4,
+      16,
+      16,
+      2
+    ],
+    [
+      "symmetric",
+      64,
+      12,
+      16,
+      8
+    ],
+    [
+      "asymmetric",
+      128,
+      4,
+      16,
+      8
+    ],
+    [
+      "asymmetric",
+      128,
+      8,
+      16,
+      8
+    ],
+    [
+      "asymmetric",
+      64,
+      12,
+      16,
+      8
+    ],
+    [
+      "asymmetric",
+      4,
+      16,
+      16,
+      8
+    ],
+    [
+      "chain",
+      128,
+      16,
+      16,
+      8
+    ],
+    [
+      "mixed",
+      128,
+      8,
+      16,
+      8
+    ]
+  ],
+  "configuration": {
+    "output": "build/cpu-shape-sweep-final",
+    "worker": "/home/strgenix/postdoc/projects/nvidiads/pyre/build/benchmark-cpu-shapes-worker",
+    "cpu": 2,
+    "rounds": 3,
+    "samples": 3,
+    "interval": 0.05,
+    "rows": [
+      1,
+      32,
+      256,
+      5000
+    ],
+    "families": null
+  },
+  "git_head": "1a749e76e6368fe03f260923d1f958a79c6dc948",
+  "protocol": "Scalar Balsa oracle gates before timing; 3 warmups per interval; independent native workers; calibrated complete allocating public margin calls; construction and input generation excluded; randomized rounds; synthetic structural stress, not model accuracy or native trainer comparison.",
+  "balsa_commit": "737874f3eae9d95a0517397130f445b303d28cc6",
+  "balsa_source_sha256": {
+    "build/balsa-reference/src/balsa/__init__.mojo": "92d54a308417bab1276d85d8722b8e8d77087138bae01f7d8e5db74dad77a6af",
+    "build/balsa-reference/src/balsa/builder.mojo": "08edd8541ddd60d71f5d0adf9ba91871bd2f97ecca3e023c8ef301bee821a073",
+    "build/balsa-reference/src/balsa/codec.mojo": "b1f91f166c1130b5b54a1a0aa4342cc31edb5a00dd9ec1a0e75b977d3c0d9b95",
+    "build/balsa-reference/src/balsa/constants.mojo": "9fa24e6da1ffa2311e175886818c28a8f0d053da30d8a2a8911ff5be4d897e3c",
+    "build/balsa-reference/src/balsa/model.mojo": "9b243b63782937d15d3536951809042ee1155862be9c87bb6d22405226bf1678",
+    "build/balsa-reference/src/balsa/validation.mojo": "c7d5aacc806480e42b3b0d49f7929b880e75e594e1a07d66b42bca1c75fc7acf",
+    "build/balsa-reference/src/balsa/wire.mojo": "3450ba7d7588eac1877f9b5cb49a32658e3a2161664f460f4d8424fe77263147"
+  }
+}

@@ -43,10 +43,24 @@ def main() raises:
 
 `Forest(model^)` takes ownership of a Balsa model. Use `Forest(model.copy())`
 when retaining an independently mutable source. Pyre validates structure with
-Balsa and checks its own supported prediction semantics. It traverses the owned
-Balsa tree arrays directly, avoiding a second model representation and repacking.
-Training metadata remains in that owned model; there is no compact serving layout
-or memory-reduction claim yet. Do not mutate the forest's private model fields.
+Balsa and checks its own supported prediction semantics. Eligible CPU forests also receive a compact symmetric-tree representation at
+construction, stored in owned NuMojo arrays. Other forests traverse the Balsa
+arrays directly. The original model and training metadata remain owned, so this
+reduces hot traversal metadata but does not reduce total resident model memory.
+Do not mutate the forest's private model or packed fields.
+
+CPU inspection, routing and execution live in a private `_CPUPlan`; the public
+`Forest` interface exposes no trainer or kernel selection. Leaf-only forests
+cache their ordered tree sum at construction. See [CPU preparation and
+fixtures](docs/cpu-planning.md).
+
+The compact path supports symmetric numerical LE trees with finite thresholds,
+shared split/default direction at each depth, and depths up to 16. Trees may have
+different depths. Large batches can share feature quantization in feature-major
+byte tiles; small batches use direct comparisons. Thresholds and leaves retain
+the model precision. NaNs follow the original missing direction. See
+[CPU symmetric inference](docs/cpu-symmetric.md) for eligibility, benchmarking,
+and the deliberately deferred concurrency work.
 
 Use Balsa's `ModelBuilder`/`TreeBuilder` for in-memory construction and
 `load[DType.float64]` for known double precision. For unknown precision, use
@@ -67,6 +81,11 @@ feature count. Empty batches and contiguous offset views work; strided input
 requires an explicit contiguous copy. `predict` is regression-only; binary labels
 use their own typed operation.
 
+The compact and constant CPU paths currently execute serially. It accepts the existing
+nonnegative `num_threads` argument for API compatibility but does not schedule
+workers. The general CPU evaluator retains its existing concurrency behavior.
+GPU storage, kernels, and dispatch are unchanged.
+
 ## SIMD and supported semantics
 
 Traversal operates on groups of independent rows using pointer gathers, SIMD
@@ -85,11 +104,13 @@ choose it by benchmarking the target CPU and model. Binary sigmoid
 and label conversion run inside each worker with one output allocation, without
 intermediate margin/probability arrays. Tree summation order is preserved. Base
 scores are added in their Balsa Float64 precision before narrowing the result.
-At construction, Pyre checks whether every numerical split uses LT. Each
-prediction dispatches once to an LT-only or general kernel. Compile-time
+For forests that do not use the compact path, Pyre checks whether every
+numerical split uses LT. Each prediction dispatches once to an LT-only or
+general kernel. Compile-time
 specialization removes operator loads and the five-way comparison from the
 LT-only kernel; mixed/EQ/LE/GT/GE forests retain general semantics. Leaf metadata
-does not affect dispatch. No model repacking or runtime code generation occurs.
+does not affect generic operator dispatch. Compact packing happens only at
+construction; there is no runtime code generation.
 Run `pixi run assembly` to inspect vector code generation.
 
 Within each worker's row partition, CPU traversal uses 256-row tiles and consecutive
@@ -109,6 +130,9 @@ Categorical splits, vector leaves, multiclass/multi-target output, unknown
 extensions and other task/transform combinations are rejected. Leaf-ID/per-tree output and autotuning remain future work.
 
 ## CPU threading
+
+The following scheduler policy applies to the general evaluator. Compact CPU
+inference is currently serial, with concurrency redesign deferred.
 
 Every prediction method accepts keyword `num_threads`: `1` forces serial
 execution, positive values bound task concurrency for that call, and `0` (the

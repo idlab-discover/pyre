@@ -1,0 +1,44 @@
+[
+  {
+    "case": "f34-d8",
+    "dtype": "float32",
+    "rows": 5000,
+    "kernel": "auto",
+    "exact": true
+  },
+  {
+    "case": "f34-d8",
+    "dtype": "float32",
+    "rows": 5000,
+    "kernel": "direct",
+    "exact": true
+  },
+  {
+    "case": "f34-d8",
+    "dtype": "float32",
+    "rows": 5000,
+    "kernel": "generic",
+    "exact": true
+  },
+  {
+    "case": "f34-d8",
+    "dtype": "float64",
+    "rows": 5000,
+    "kernel": "auto",
+    "exact": true
+  },
+  {
+    "case": "f34-d8",
+    "dtype": "float64",
+    "rows": 5000,
+    "kernel": "direct",
+    "exact": true
+  },
+  {
+    "case": "f34-d8",
+    "dtype": "float64",
+    "rows": 5000,
+    "kernel": "generic",
+    "exact": true
+  }
+]
