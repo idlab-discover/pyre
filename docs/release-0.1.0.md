@@ -8,6 +8,8 @@ with NuMojo arrays and no Python/libtreelite inference dependency.
 - Structure-aware CPU dispatch for constant, compact symmetric, and general
   forests, plus bounded parallel traversal for general trees.
 - Packed resident GPU inference with explicit transfers and reusable outputs.
+- Explicit CPU sigmoid underflow handling preserves extreme probabilities and
+  threshold-zero labels across target-specific math implementations.
 - Pinned Pyre/Balsa library bundle, checksums, dependency lock, and an isolated
   consumer example; no sibling checkout required.
 

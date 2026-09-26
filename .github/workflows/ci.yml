@@ -38,6 +38,10 @@ jobs:
         with:
           pixi-version: v0.80.0
           locked: true
+      - name: CPU target
+        run: |
+          lscpu
+          pixi run --locked mojo --version
       - name: ${{ matrix.first }}
         run: pixi run --locked "${{ matrix.first }}"
       - name: ${{ matrix.second }}

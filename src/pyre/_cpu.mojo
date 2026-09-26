@@ -407,7 +407,21 @@ struct _CPUPlan[dtype: DType = DType.float32](Movable):
                             Scalar[Self.dtype](self._model.sigmoid_alpha)
                             * value
                         )
-                        var e = exp(-abs(z))
+                        var magnitude = abs(z)
+                        var e = exp(-magnitude)
+                        # Some CPU exp lowerings clamp extreme arguments to a
+                        # tiny nonzero value. Enforce rounded underflow without
+                        # depending on the caller's flush-to-zero mode: otherwise
+                        # a negative extreme can become class 1 at threshold 0.
+                        # First representable magnitudes above log(2) * 150
+                        # (f32) / 1075 (f64), half the smallest subnormal.
+                        comptime zero_cutoff = (
+                            103.97208404541015625 if Self.dtype
+                            == DType.float32 else 745.1332191019412
+                        )
+                        e = magnitude.ge(
+                            Scalar[Self.dtype](zero_cutoff)
+                        ).select(SIMD[Self.dtype, width](0), e)
                         value = z.ge(0).select(1 / (1 + e), e / (1 + e))
                     comptime if mode == 1:
                         comptime for lane in range(width):

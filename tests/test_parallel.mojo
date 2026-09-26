@@ -380,7 +380,11 @@ def test_divergent_leaf_depths_and_wide_tails() raises:
 
 
 def _check_sigmoid_extremes[dtype: DType]() raises:
-    for magnitude in [Scalar[dtype](1000), inf[dtype]()]:
+    for magnitude in [
+        Scalar[dtype](104 if dtype == DType.float32 else 746),
+        Scalar[dtype](1000),
+        inf[dtype](),
+    ]:
         var model = stump[dtype](Operator.LT, False, trees=1)
         model.task_type = TaskType.BINARY_CLF
         model.set_postprocessor_name("sigmoid")

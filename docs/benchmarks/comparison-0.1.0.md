@@ -65,4 +65,7 @@ The collector is preserved separately on `feat/comparison-matrix`, commit
 at `build/comparison-20260926-172901/`, run
 `eeedeea0-9827-4000-9781-d3833c053e9e`. Raw measurements are not distributed with
 this summary. The collector commit adds tooling to runtime revision `856f875`;
-release preparation changes packaging and documentation, not inference kernels.
+release preparation preserves the measured regression execution paths. A CPU
+classifier-only sigmoid underflow guard was added after hosted CI exposed
+target-dependent extreme probabilities; classifier performance was not measured
+in this comparison.
