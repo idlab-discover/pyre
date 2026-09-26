@@ -149,6 +149,42 @@ def test_zero_features_and_join_on_error() raises:
     assert_equal(result.item(0), Float32(7))
 
 
+def test_oversized_batch_rejected_before_allocation() raises:
+    var ctx = DeviceContext()
+    var builder = ModelBuilder(num_feature=0)
+    var tree = TreeBuilder(num_nodes=1)
+    tree.leaf(0, 1.5)
+    builder.add_tree(tree^.build())
+    var model = builder^.build()
+    var forest = GpuForest.prepare(model, ctx)
+    # Zero features exercise the real public shape without a huge allocation.
+    var x = GpuBatch[DType.float32](ctx, Shape(Int(Int32.MAX) + 1, 0))
+    var output = GpuArray[DType.float32, 1](ctx, Shape(1))
+    output._buffer.enqueue_fill(-99)
+    ctx.synchronize()
+    for operation in range(5):
+        var raised = False
+        try:
+            if operation == 0:
+                _ = forest.predict(x)
+            elif operation == 1:
+                _ = forest.predict_margin(x)
+            elif operation == 2:
+                _ = forest.predict_proba(x)
+            elif operation == 3:
+                _ = forest.predict_class(x)
+            else:
+                forest.predict_margin_into(x, output)
+        except error:
+            raised = True
+            assert_equal(
+                String(error),
+                "Pyre GPU inference supports at most 2147483647 rows",
+            )
+        assert_true(raised)
+    assert_equal(output.to_host().item(0), Float32(-99))
+
+
 def escaped_result() raises -> GpuArray[DType.float32, 1]:
     var ctx = DeviceContext()
     var model = stump[DType.float32](Operator.LT, False, False)

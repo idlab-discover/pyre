@@ -3,10 +3,9 @@
 Measure the Balsa storage and compact CPU array payload retained by a newly constructed CPU `Forest`:
 
 ```sh
-pixi run prepare
-pixi run mojo build -I src -I build/balsa-reference/src tools/model_memory_worker.mojo -o build/model-memory-worker
+pixi run model-memory-build
 pixi run python tools/model_memory.py
-pixi run python -m unittest discover -s tests -p test_model_memory.py
+pixi run test-python
 ```
 
 The default inputs are the twelve saved oracle checkpoints, verified against

@@ -55,13 +55,14 @@ screens, not the five-process release protocol in `docs/gpu-benchmarking.md`.
 
 ## Validation
 
-`pixi run test-gpu` runs 13 tests, including new ones covering:
+`pixi run test-gpu` runs 14 tests, including new ones covering:
 - every launch configuration against CPU on random mixed-operator forests
   (both dtypes);
 - the wide float32 layout;
-- ±inf, ±MAX, ±tiny, ±0 and NaN thresholds for every operator in both dtypes.
+- ±inf, ±MAX, ±tiny, ±0 and NaN thresholds for every operator in both dtypes;
+- oversized batches rejected before allocation or launch.
 
-`pixi run check` passes. On the test binary, compute-sanitizer memcheck reports
-0 kernel errors with `--report-api-errors no`; MAX's allocator produces benign
-`cuMemCreate` API errors. Racecheck reports 0 hazards. initcheck and synccheck
-were not completed.
+The [2026-09-26 consolidation review](../branch-cleanup.md) validates the combined
+CPU/GPU candidate. All four Compute Sanitizer tools pass with device and host
+allocation pools disabled and API error reporting enabled. This supersedes the
+initial partial memcheck/racecheck run with API errors suppressed.

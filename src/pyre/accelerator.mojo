@@ -79,12 +79,10 @@ def to_accelerator[
     return result^
 
 
-def _require_cpu[device: Device]() raises:
-    comptime if device.type != "cpu":
-        raise Error(
-            "NotImplementedError: GPU inference requires GPU kernels; CPU"
-            " fallback is disabled"
-        )
+comptime _GPU_INFERENCE_ERROR = (
+    "NotImplementedError: GPU inference requires GPU kernels; CPU"
+    " fallback is disabled"
+)
 
 
 def predict_cpu[
@@ -96,10 +94,12 @@ def predict_cpu[
     num_threads: Int = 0,
 ) raises -> AcceleratorNDArray[dtype, device]:
     """Regression inference for CPU accelerator arrays; GPU input raises."""
-    _require_cpu[device]()
-    var host = to_host(x)
-    var result = forest.predict(host, num_threads=num_threads)
-    return to_accelerator[dtype, device](result)
+    comptime if device.type == "cpu":
+        var host = to_host(x)
+        var result = forest.predict(host, num_threads=num_threads)
+        return to_accelerator[dtype, device](result)
+    else:
+        raise Error(_GPU_INFERENCE_ERROR)
 
 
 def predict_margin_cpu[
@@ -111,10 +111,12 @@ def predict_margin_cpu[
     num_threads: Int = 0,
 ) raises -> AcceleratorNDArray[dtype, device]:
     """Raw margins for CPU accelerator arrays; GPU input raises."""
-    _require_cpu[device]()
-    var host = to_host(x)
-    var result = forest.predict_margin(host, num_threads=num_threads)
-    return to_accelerator[dtype, device](result)
+    comptime if device.type == "cpu":
+        var host = to_host(x)
+        var result = forest.predict_margin(host, num_threads=num_threads)
+        return to_accelerator[dtype, device](result)
+    else:
+        raise Error(_GPU_INFERENCE_ERROR)
 
 
 def predict_proba_cpu[
@@ -126,10 +128,12 @@ def predict_proba_cpu[
     num_threads: Int = 0,
 ) raises -> AcceleratorNDArray[dtype, device]:
     """Binary probabilities for CPU accelerator arrays; GPU input raises."""
-    _require_cpu[device]()
-    var host = to_host(x)
-    var result = forest.predict_proba(host, num_threads=num_threads)
-    return to_accelerator[dtype, device](result)
+    comptime if device.type == "cpu":
+        var host = to_host(x)
+        var result = forest.predict_proba(host, num_threads=num_threads)
+        return to_accelerator[dtype, device](result)
+    else:
+        raise Error(_GPU_INFERENCE_ERROR)
 
 
 def predict_class_cpu[
@@ -142,7 +146,11 @@ def predict_class_cpu[
     num_threads: Int = 0,
 ) raises -> AcceleratorNDArray[DType.int64, device]:
     """Binary labels for CPU accelerator arrays; GPU input raises."""
-    _require_cpu[device]()
-    var host = to_host(x)
-    var result = forest.predict_class(host, threshold, num_threads=num_threads)
-    return to_accelerator[DType.int64, device](result)
+    comptime if device.type == "cpu":
+        var host = to_host(x)
+        var result = forest.predict_class(
+            host, threshold, num_threads=num_threads
+        )
+        return to_accelerator[DType.int64, device](result)
+    else:
+        raise Error(_GPU_INFERENCE_ERROR)

@@ -216,13 +216,20 @@ struct GpuForest[dtype: DType = DType.float32](Movable):
     def is_classifier(self) -> Bool:
         return self._classifier
 
+    def _check_input(self, x: GpuBatch[Self.dtype]) raises:
+        # Kernel row counts are signed 32-bit. Check before output allocation
+        # as well as before launch, including zero-feature batches.
+        if x._shape[0] > Int(Int32.MAX):
+            raise Error("Pyre GPU inference supports at most 2147483647 rows")
+        if x._shape[1] != self._features:
+            raise Error("Pyre input feature count does not match the forest")
+
     def _check[
         output_dtype: DType, rank: Int
     ](
         self, x: GpuBatch[Self.dtype], output: GpuArray[output_dtype, rank]
     ) raises:
-        if x._shape[1] != self._features:
-            raise Error("Pyre input feature count does not match the forest")
+        self._check_input(x)
         if output._shape[0] != x._shape[0]:
             raise Error("Pyre GPU output row count mismatch")
         comptime if rank == 2:
@@ -410,6 +417,7 @@ struct GpuForest[dtype: DType = DType.float32](Movable):
     def predict_margin(
         self, x: GpuBatch[Self.dtype]
     ) raises -> GpuArray[Self.dtype, 1]:
+        self._check_input(x)
         var result = GpuArray[Self.dtype, 1](self._context, Shape(x._shape[0]))
         self.predict_margin_into(x, result)
         return result^
@@ -417,6 +425,7 @@ struct GpuForest[dtype: DType = DType.float32](Movable):
     def predict(
         self, x: GpuBatch[Self.dtype]
     ) raises -> GpuArray[Self.dtype, 1]:
+        self._check_input(x)
         var result = GpuArray[Self.dtype, 1](self._context, Shape(x._shape[0]))
         self.predict_into(x, result)
         return result^
@@ -424,6 +433,7 @@ struct GpuForest[dtype: DType = DType.float32](Movable):
     def predict_proba(
         self, x: GpuBatch[Self.dtype]
     ) raises -> GpuArray[Self.dtype, 2]:
+        self._check_input(x)
         var result = GpuArray[Self.dtype, 2](
             self._context, Shape(x._shape[0], 2)
         )
@@ -433,6 +443,7 @@ struct GpuForest[dtype: DType = DType.float32](Movable):
     def predict_class(
         self, x: GpuBatch[Self.dtype], threshold: Scalar[Self.dtype] = 0.5
     ) raises -> GpuArray[DType.int64, 1]:
+        self._check_input(x)
         var result = GpuArray[DType.int64, 1](self._context, Shape(x._shape[0]))
         self.predict_class_into(x, result, threshold)
         return result^

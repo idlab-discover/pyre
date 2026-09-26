@@ -18,9 +18,13 @@ pixi install --locked
 pixi run run
 pixi run check
 pixi run test-gpu  # GPU inference, native storage, and legacy transfer tests
+pixi run check-all  # all of the above, including Python tooling tests
 ```
 
-`check` builds the example, precompiles `build/pyre.mojoc`, and runs native tests.
+`check` builds the example, precompiles `build/pyre.mojoc`, runs native tests,
+and rebuilds the memory-accounting worker before running Python tooling tests.
+It also compiles and runs the core acceptance suite with GPU compilation disabled
+(`test-cpu-only`), so CPU support does not depend on GPU availability.
 Consumers compile with `-I src -I build/balsa-reference/src` in this environment.
 
 ## Balsa owns loading; Pyre owns inference
@@ -81,10 +85,9 @@ feature count. Empty batches and contiguous offset views work; strided input
 requires an explicit contiguous copy. `predict` is regression-only; binary labels
 use their own typed operation.
 
-The compact and constant CPU paths currently execute serially. It accepts the existing
-nonnegative `num_threads` argument for API compatibility but does not schedule
+The compact and constant CPU paths currently execute serially. They accept the existing
+nonnegative `num_threads` argument for API compatibility but do not schedule
 workers. The general CPU evaluator retains its existing concurrency behavior.
-GPU storage, kernels, and dispatch are unchanged.
 
 ## SIMD and supported semantics
 
@@ -204,6 +207,8 @@ Create outputs with `GpuArray[dtype, 1](context, Shape(rows))`,
 `GpuArray[dtype, 2](context, Shape(rows, 2))` for probabilities, or
 `GpuArray[DType.int64, 1]` for labels. `dim(axis)` and `size()` inspect shape.
 Inputs and outputs must not overlap; wrong shapes/devices raise before launch.
+GPU inference accepts at most 2,147,483,647 rows per call. Larger batches raise
+before output allocation or kernel launch; split them into smaller calls.
 
 Native device inputs do not require NuMojo wrapping:
 `GpuBatch[dtype].from_buffer(buffer^, rows, features, offset=0, context=context)`
