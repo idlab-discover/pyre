@@ -1,5 +1,6 @@
 # Pyre
 
+![Pyre: a flame mascot on a furnace](assets/branding/pyre-logo-169.png)
 CPU and GPU tree-ensemble inference in pure Mojo, using **Balsa models** and
 **NuMojo arrays**. The native runtime does not call Python or libtreelite.
 
@@ -296,3 +297,7 @@ snapshot; the stored reference predictions remain valid.
 
 See [responsibilities](docs/responsibilities.md) and
 [upstream notices](THIRD_PARTY_NOTICES.md).
+
+<p align="center">
+  <img src="assets/branding/pyre-logo-square.png" alt="Pyre mascot" width="160">
+</p>
