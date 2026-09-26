@@ -16,16 +16,46 @@ concurrency:
 
 jobs:
   test:
+    name: CPU (${{ matrix.group }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - group: planning
+            first: test-cpu-plan
+            second: test-symmetric
+          - group: API
+            first: test
+            second: test-cpu-only
+          - group: concurrency
+            first: test-parallel
+            second: test-specialization
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: prefix-dev/setup-pixi@d3f436a425481402e6a95a1d1fc10331c708cd9e # v0.10.2
         with:
           pixi-version: v0.80.0
           locked: true
-      - name: CPU tests, library build, and isolated consumer
-        run: pixi run --locked check
+      - name: ${{ matrix.first }}
+        run: pixi run --locked "${{ matrix.first }}"
+      - name: ${{ matrix.second }}
+        run: pixi run --locked "${{ matrix.second }}"
+
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: prefix-dev/setup-pixi@d3f436a425481402e6a95a1d1fc10331c708cd9e # v0.10.2
+        with:
+          pixi-version: v0.80.0
+          locked: true
+      - name: Build example
+        run: pixi run --locked build
+      - name: Python tooling tests
+        run: pixi run --locked test-python
       - name: Build release bundle
         run: pixi run --locked release
       - name: Install and run bundle outside the source tree
@@ -46,7 +76,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: test
+    needs: [test, package]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
