@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 'feat/**', 'feature/**', 'release/**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: prefix-dev/setup-pixi@d3f436a425481402e6a95a1d1fc10331c708cd9e # v0.10.2
+        with:
+          pixi-version: v0.80.0
+          locked: true
+      - name: CPU tests, library build, and isolated consumer
+        run: pixi run --locked check
+      - name: Build release bundle
+        run: pixi run --locked release
+      - name: Install and run bundle outside the source tree
+        shell: bash
+        run: |
+          bundle_dir=$(mktemp -d)
+          tar -xzf build/release/pyre-*-linux-64.tar.gz -C "$bundle_dir"
+          cd "$bundle_dir"/pyre-*-linux-64
+          pixi install --locked
+          pixi run --locked consumer
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pyre-linux-64
+          path: |
+            build/release/*.tar.gz
+            build/release/SHA256SUMS
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: pyre-linux-64
+          path: release
+      - name: Publish verified tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          version=$(python3 -c 'import tomllib; print(tomllib.load(open("pixi.toml", "rb"))["workspace"]["version"])')
+          test "$GITHUB_REF_NAME" = "v$version"
+          cd release
+          sha256sum -c SHA256SUMS
+          cd ..
+          gh release create "$GITHUB_REF_NAME" release/*.tar.gz release/SHA256SUMS \
+            --verify-tag --title "Pyre $version" --notes-file "docs/release-$version.md"

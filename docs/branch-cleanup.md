@@ -1,5 +1,8 @@
 # Branch consolidation and first polish
 
+Historical review. Release preparation subsequently removed the sibling-checkout
+requirement and added distribution/CI; see [distribution](distribution.md).
+
 Reviewed 2026-09-26 against local `main` at `dff9d58`. No remote is configured.
 Review covered source changes, documented contracts, combined-branch validation,
 and local experiment preservation. No performance benchmarks were rerun.
