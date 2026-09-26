@@ -147,7 +147,20 @@ var parallel = forest.predict_margin(x, num_threads=4)
 Treelite loading and structural validation. GPU preparation borrows its model,
 checks the same supported semantics as CPU, and copies the required fields into
 independent resident device arrays. The source model can then be released or
-edited. The current flattened layout is a baseline, not an optimal-layout claim.
+edited.
+
+Preparation packs every tree depth-first into 8-byte float32 nodes (16 bytes
+for float64, or for float32 forests with more than 8,192 features or trees of
+65,536+ nodes). Splits are normalized so one comparison selects the child:
+GT/GE exchange children, LE becomes LT on the next representable threshold
+(except at +inf), and NaN thresholds keep their always-false routing. Float64
+splits compare order-preserving integer keys, avoiding the low FP64 compare
+rate of consumer GPUs; results are identical to IEEE comparisons. Each block
+evaluates a small power-of-two group of rows, with threads split across trees
+and per-row partials reduced in shared memory. Rows per block and threads per
+block are chosen from row count, tree count and row width, from a sweep on an
+RTX 5090. Unlike the CPU path, tree summation order differs from model order,
+so GPU and CPU margins can differ in the last bits.
 
 ```mojo
 from max.gpu.host import DeviceContext

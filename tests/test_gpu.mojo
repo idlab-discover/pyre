@@ -1,7 +1,7 @@
 """GPU semantic, storage, and GTIL acceptance checks (requires a GPU)."""
 from acceptance import stump, check_edges
 from reference_data import check_references
-from balsa import load, ModelBuilder, TreeBuilder, Operator
+from balsa import load, Model, ModelBuilder, TreeBuilder, Operator
 from max.gpu.host import DeviceContext
 from pyre import Forest
 from pyre.gpu import GpuForest, GpuBatch, GpuArray, upload, upload_into
@@ -48,7 +48,9 @@ def test_offsets_capacity_aliasing() raises:
         f.predict_into(batch, output)
     var y = output.to_host()
     for i in range(9):
-        assert_equal(y.item(i), expected.item(i))
+        # Trees are summed in a different association than on CPU.
+        var e = expected.item(i)
+        assert_true(abs(y.item(i) - e) <= Float32(1e-6) * (1 + abs(e)))
     var all_values = GpuArray[DType.float32, 1](
         backing, Shape(24), context=ctx
     ).to_host()
@@ -285,6 +287,196 @@ def test_reused_upload_outlives_host_and_context() raises:
     var batch = escaped_upload()
     var moved = batch^
     assert_equal(moved.to_host().item(0), Float32(42))
+
+
+struct _Lcg:
+    var state: UInt64
+
+    def __init__(out self, seed: UInt64):
+        self.state = seed
+
+    def next(mut self) -> Int:
+        self.state = self.state * 6364136223846793005 + 1442695040888963407
+        return Int(self.state >> 33)
+
+    def unit(mut self) -> Float64:
+        return Float64(self.next() % 1000000) / 1000000.0
+
+
+def random_forest[
+    dtype: DType
+](trees: Int, features: Int, depth: Int, seed: UInt64) raises -> Model[dtype]:
+    """Uneven trees with every operator, both defaults and repeated features."""
+    var rng = _Lcg(seed)
+    var builder = ModelBuilder[dtype](
+        num_feature=Int32(features),
+        base_scores=[0.125],
+        average_tree_output=False,
+    )
+    var ops = [Operator.EQ, Operator.LT, Operator.LE, Operator.GT, Operator.GE]
+    for _ in range(trees):
+        # Grow a random shape: node i splits with its children appended.
+        var left = List[Int]()
+        var right = List[Int]()
+        var level = List[Int]()
+        left.append(-1)
+        right.append(-1)
+        level.append(0)
+        var i = 0
+        while i < len(left):
+            if level[i] < depth and (level[i] == 0 or rng.next() % 5 != 0):
+                left[i] = len(left)
+                right[i] = len(left) + 1
+                for _ in range(2):
+                    left.append(-1)
+                    right.append(-1)
+                    level.append(level[i] + 1)
+            i += 1
+        var tree = TreeBuilder[dtype](num_nodes=len(left))
+        for n in range(len(left)):
+            if left[n] < 0:
+                tree.leaf(n, Scalar[dtype](rng.unit() * 2 - 1))
+            else:
+                # Thresholds lie on a coarse grid so inputs can hit them exactly.
+                tree.numerical_split(
+                    n,
+                    feature=Int32(rng.next() % features),
+                    threshold=Scalar[dtype](Float64(rng.next() % 9) / 4 - 1),
+                    left=Int32(left[n]),
+                    right=Int32(right[n]),
+                    op=ops[rng.next() % len(ops)],
+                    default_left=rng.next() % 2 == 0,
+                )
+        builder.add_tree(tree^.build())
+    return builder^.build()
+
+
+def random_rows[
+    dtype: DType
+](rows: Int, features: Int, seed: UInt64) raises -> NDArray[dtype]:
+    var rng = _Lcg(seed)
+    var x = NDArray[dtype](Shape(rows, features))
+    for i in range(rows * features):
+        var pick = rng.next() % 10
+        if pick == 0:
+            x.itemset(i, nan[dtype]())
+        elif pick < 4:
+            x.itemset(i, Scalar[dtype](Float64(rng.next() % 9) / 4 - 1))
+        else:
+            x.itemset(i, Scalar[dtype](rng.unit() * 2.5 - 1.25))
+    return x^
+
+
+def check_launch_configurations[
+    dtype: DType
+](trees: Int, features: Int, depth: Int, rows: Int) raises:
+    var model = random_forest[dtype](trees, features, depth, 7)
+    var x = random_rows[dtype](rows, features, 11)
+    var expected = Forest(model.copy()).predict_margin(x, num_threads=1)
+    var ctx = DeviceContext()
+    var forest = GpuForest.prepare(model, ctx)
+    var batch = upload(x, ctx)
+    var output = GpuArray[dtype, 1](ctx, Shape(rows))
+    var tolerance = Scalar[dtype](1e-5 if dtype == DType.float32 else 1e-12)
+    for shift in range(6):
+        for threads in [0, 32, 64, 128, 256, 512]:
+            if threads != 0 and threads < (1 << shift):
+                continue
+            output._buffer.enqueue_fill(-99)
+            with _Join(ctx):
+                forest._enqueue[dtype, 1, 0](batch, output, 0.5, shift, threads)
+            var y = output.to_host()
+            for i in range(rows):
+                var e = expected.item(i)
+                if abs(y.item(i) - e) > tolerance * (1 + abs(e)):
+                    raise Error(
+                        String(
+                            t"shift={shift} threads={threads} row={i}"
+                            t" got={y.item(i)} expected={e}"
+                        )
+                    )
+
+
+def test_launch_configurations() raises:
+    check_launch_configurations[DType.float32](37, 5, 7, 70)
+    check_launch_configurations[DType.float64](37, 5, 7, 70)
+    check_launch_configurations[DType.float32](300, 3, 4, 3)
+
+
+def test_wide_float32_nodes() raises:
+    # More features than the compact node encoding addresses.
+    var model = random_forest[DType.float32](9, 9000, 5, 3)
+    var ctx = DeviceContext()
+    var forest = GpuForest.prepare(model, ctx)
+    assert_equal(forest._words, 4)
+    var x = random_rows[DType.float32](9, 9000, 5)
+    var expected = Forest(model.copy()).predict_margin(x, num_threads=1)
+    var y = forest.predict_margin(upload(x, ctx)).to_host()
+    for i in range(9):
+        # Trees are summed in a different association than on CPU.
+        var e = expected.item(i)
+        assert_true(abs(y.item(i) - e) <= Float32(1e-6) * (1 + abs(e)))
+
+
+def check_threshold_extremes[dtype: DType]() raises:
+    var big = Scalar[dtype].MAX_FINITE
+    var tiny = Scalar[dtype](1e-30)
+    var thresholds = [
+        inf[dtype](),
+        -inf[dtype](),
+        big,
+        -big,
+        tiny,
+        -tiny,
+        Scalar[dtype](0),
+        -Scalar[dtype](0),
+        nan[dtype](),
+    ]
+    var values = [
+        inf[dtype](),
+        -inf[dtype](),
+        big,
+        -big,
+        tiny,
+        Scalar[dtype](0),
+        -Scalar[dtype](0),
+        nan[dtype](),
+        Scalar[dtype](1),
+        -tiny,
+    ]
+    var ctx = DeviceContext()
+    for t in thresholds:
+        for op in [
+            Operator.EQ,
+            Operator.LT,
+            Operator.LE,
+            Operator.GT,
+            Operator.GE,
+        ]:
+            for default in [False, True]:
+                var model = stump[dtype](op, default)
+                for k in range(len(model.trees)):
+                    model.trees[k].threshold[0] = t
+                var x = NDArray[dtype](Shape(len(values), 1))
+                for i in range(len(values)):
+                    x.itemset(i, values[i])
+                var expected = Forest(model.copy()).predict_margin(x)
+                var forest = GpuForest.prepare(model, ctx)
+                var y = forest.predict_margin(upload(x, ctx)).to_host()
+                for i in range(len(values)):
+                    if y.item(i) != expected.item(i):
+                        raise Error(
+                            String(
+                                t"threshold={t} op={op} default={default}"
+                                t" x={values[i]} got={y.item(i)}"
+                                t" expected={expected.item(i)}"
+                            )
+                        )
+
+
+def test_threshold_extremes() raises:
+    check_threshold_extremes[DType.float32]()
+    check_threshold_extremes[DType.float64]()
 
 
 def main() raises:
