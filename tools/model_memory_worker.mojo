@@ -126,6 +126,8 @@ def audit[dtype: DType](var model: Model[dtype]) raises:
     packed("packed.borders", forest._cpu._symmetric.borders)
     packed("packed.border_offsets", forest._cpu._symmetric.border_offsets)
     packed("packed.split_bins", forest._cpu._symmetric.split_bins)
+    packed("packed.nodes", forest._cpu._packed.nodes)
+    packed("packed.roots", forest._cpu._packed.roots)
     print("validated_trees", forest.num_trees(), sep="\t")
 
 

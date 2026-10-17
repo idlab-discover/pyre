@@ -1,12 +1,13 @@
 """Private CPU preparation and execution; Forest is the public interface."""
 
-from std.math import exp, isnan
+from std.math import exp
 from std.sys import simd_width_of
 from std.runtime import initialize_runtime
 from std.runtime.asyncrt import parallelism_level
 from ._executor import _Executor
 from ._validation import validate_inference
 from ._symmetric import _Symmetric
+from ._packed import _Packed, _OP_LT, _OP_LE, _MIXED
 from balsa import Model, NodeType, Operator, TaskType
 from numojo import NDArray
 from numojo.core.type_aliases import Shape
@@ -35,7 +36,7 @@ struct _CPUPlan[dtype: DType = DType.float32](Movable):
     var _constant_total: Scalar[Self.dtype]
     var _model: Model[Self.dtype]
     var _symmetric: _Symmetric[Self.dtype]
-    var _lt_only: Bool
+    var _packed: _Packed[Self.dtype]
     var _executor: _Executor
 
     def __init__(
@@ -46,7 +47,7 @@ struct _CPUPlan[dtype: DType = DType.float32](Movable):
         Pass model^ to transfer an existing model, or model.copy() to retain an
         independently mutable source. Balsa remains responsible for structure.
         """
-        var lt_only = validate_inference(model)
+        _ = validate_inference(model)
         self._symmetric = _Symmetric(model)
         self._strategy = strategy
         self._constant = True
@@ -57,7 +58,7 @@ struct _CPUPlan[dtype: DType = DType.float32](Movable):
             # Preserve the exact incoming-zero and ordered-sum semantics.
             for tree in model.trees:
                 self._constant_total += tree.leaf_value[0]
-        self._lt_only = lt_only
+        self._packed = _Packed(model)
         self._model = model^
         self._executor = _Executor()
         self._use_strategy(strategy)
@@ -118,100 +119,6 @@ struct _CPUPlan[dtype: DType = DType.float32](Movable):
         ):
             raise Error("Pyre MVP requires C-contiguous input")
 
-    def _tree_range[
-        width: Int, lt_only: Bool
-    ](
-        self,
-        x: NDArray[Self.dtype],
-        row: Int,
-        count: Int,
-        begin: Int,
-        end: Int,
-        var total: SIMD[Self.dtype, width],
-    ) -> SIMD[Self.dtype, width]:
-        comptime assert Self.dtype.is_floating_point()
-        # Continue the incoming total in original tree order. Independent group
-        # sums would change floating-point association.
-        var input = x.unsafe_ptr()
-        comptime if width == 1:
-            # A scalar fallback avoids masked-gather overhead on one-row calls.
-            for tree_id in range(begin, end):
-                ref tree = self._model.trees[tree_id]
-                var node = 0
-                while tree.node_type[node] != NodeType.LEAF:
-                    var value = input[
-                        unsafe_offset=row * self.num_features()
-                        + Int(tree.split_index[node])
-                    ]
-                    var threshold = tree.threshold[node]
-                    var left: Bool
-                    comptime if lt_only:
-                        left = value < threshold
-                    else:
-                        var op = tree.cmp[node]
-                        left = (
-                            (op == Operator.EQ and value == threshold)
-                            or (op == Operator.LT and value < threshold)
-                            or (op == Operator.LE and value <= threshold)
-                            or (op == Operator.GT and value > threshold)
-                            or (op == Operator.GE and value >= threshold)
-                        )
-                    if isnan(value):
-                        left = tree.default_left[node] != 0
-                    node = Int(tree.cleft[node] if left else tree.cright[node])
-                total += tree.leaf_value[node]
-        else:
-            var lanes = SIMD[DType.int64, width](0)
-            comptime for lane in range(width):
-                lanes[lane] = Int64(lane)
-            var valid = lanes.lt(Int64(count))
-            var row_offsets = (lanes + Int64(row)) * Int64(self.num_features())
-            for tree_id in range(begin, end):
-                ref tree = self._model.trees[tree_id]
-                var ids = SIMD[DType.int32, width](0)
-                var active = valid
-                while True:
-                    # Validation guarantees every reached node is in bounds.
-                    # Finished lanes stay at their leaf; tail lanes stay at root.
-                    # Balsa validates leaf children as -1, internal children >= 0.
-                    var left = tree.cleft.unsafe_ptr().unsafe_gather(ids)
-                    active &= left.ge(0)
-                    if not active.reduce_or():
-                        break
-                    var features = (
-                        tree.split_index.unsafe_ptr()
-                        .unsafe_gather(ids)
-                        .cast[DType.int64]()
-                    )
-                    # Masking is essential: leaf feature indices and absent rows
-                    # are not valid input addresses, even when their result is unused.
-                    var values = input.unsafe_gather(
-                        row_offsets + features, active
-                    )
-                    var thresholds = tree.threshold.unsafe_ptr().unsafe_gather(
-                        ids
-                    )
-                    var defaults = (
-                        tree.default_left.unsafe_ptr().unsafe_gather(ids).ne(0)
-                    )
-                    var right = tree.cright.unsafe_ptr().unsafe_gather(ids)
-                    var condition: SIMD[DType.bool, width]
-                    comptime if lt_only:
-                        condition = values.lt(thresholds)
-                    else:
-                        var ops = tree.cmp.unsafe_ptr().unsafe_gather(ids)
-                        condition = (
-                            (ops.eq(Operator.EQ) & values.eq(thresholds))
-                            | (ops.eq(Operator.LT) & values.lt(thresholds))
-                            | (ops.eq(Operator.LE) & values.le(thresholds))
-                            | (ops.eq(Operator.GT) & values.gt(thresholds))
-                            | (ops.eq(Operator.GE) & values.ge(thresholds))
-                        )
-                    condition = isnan(values).select(defaults, condition)
-                    ids = active.select(condition.select(left, right), ids)
-                total += tree.leaf_value.unsafe_ptr().unsafe_gather(ids, valid)
-        return total
-
     def _finish[
         width: Int
     ](self, var total: SIMD[Self.dtype, width]) -> SIMD[Self.dtype, width]:
@@ -259,23 +166,43 @@ struct _CPUPlan[dtype: DType = DType.float32](Movable):
         var route = self.kernel(x.shape[0] if x.ndim == 2 else 0)
         if route == _CONSTANT:
             return self._predict_impl[
-                width, output_dtype, mode, False, _CONSTANT
+                width, output_dtype, mode, False, _OP_LT, _CONSTANT
             ](x, num_threads, threshold)
         if route == _BINNED:
             return self._predict_impl[
-                width, output_dtype, mode, False, _BINNED
+                width, output_dtype, mode, False, _OP_LT, _BINNED
             ](x, num_threads, threshold)
         if route == _DIRECT:
             return self._predict_impl[
-                width, output_dtype, mode, False, _DIRECT
+                width, output_dtype, mode, False, _OP_LT, _DIRECT
             ](x, num_threads, threshold)
         # Inspect the immutable model once at construction, dispatch once per
-        # prediction. The LT kernel has no operator loads or operator dispatch.
-        if self._lt_only:
-            return self._predict_impl[width, output_dtype, mode, True](
+        # prediction. Uniform LT/LE kernels have no operator dispatch.
+        if self._packed.wide:
+            return self._predict_general[width, output_dtype, mode, True](
                 x, num_threads, threshold
             )
-        return self._predict_impl[width, output_dtype, mode, False](
+        return self._predict_general[width, output_dtype, mode, False](
+            x, num_threads, threshold
+        )
+
+    def _predict_general[
+        width: Int, output_dtype: DType, mode: Int, wide: Bool
+    ](
+        self,
+        x: NDArray[Self.dtype],
+        num_threads: Int,
+        threshold: Scalar[Self.dtype],
+    ) raises -> NDArray[output_dtype]:
+        if self._packed.op == _OP_LT:
+            return self._predict_impl[width, output_dtype, mode, wide, _OP_LT](
+                x, num_threads, threshold
+            )
+        if self._packed.op == _OP_LE:
+            return self._predict_impl[width, output_dtype, mode, wide, _OP_LE](
+                x, num_threads, threshold
+            )
+        return self._predict_impl[width, output_dtype, mode, wide, _MIXED](
             x, num_threads, threshold
         )
 
@@ -283,7 +210,8 @@ struct _CPUPlan[dtype: DType = DType.float32](Movable):
         width: Int,
         output_dtype: DType,
         mode: Int,
-        lt_only: Bool,
+        wide: Bool,
+        op: Int,
         compact: Int = 0,
     ](
         self,
@@ -375,10 +303,11 @@ struct _CPUPlan[dtype: DType = DType.float32](Movable):
                                 )
                             else:
                                 if count == 1:
-                                    scratch[i][0] = self._tree_range[
-                                        1, lt_only
+                                    scratch[i][0] = self._packed.tree_range[
+                                        1, wide, op
                                     ](
                                         x,
+                                        self.num_features(),
                                         row,
                                         1,
                                         group,
@@ -386,10 +315,11 @@ struct _CPUPlan[dtype: DType = DType.float32](Movable):
                                         scratch[i][0],
                                     )
                                 else:
-                                    scratch[i] = self._tree_range[
-                                        width, lt_only
+                                    scratch[i] = self._packed.tree_range[
+                                        width, wide, op
                                     ](
                                         x,
+                                        self.num_features(),
                                         row,
                                         count,
                                         group,

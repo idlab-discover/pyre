@@ -35,7 +35,7 @@ flowchart TD
 | Every tree consists of one leaf root | Cache the ordered sum at construction; apply averaging/base score and output transform at prediction |
 | Every tree meets compact eligibility; byte bins have reuse; at least 256 rows | Symmetric evaluation with per-call feature bins |
 | Every tree meets compact eligibility; bin policy is not selected | Symmetric evaluation with direct float comparisons |
-| Otherwise, within supported inference semantics | General traversal, including the existing all-LT specialization |
+| Otherwise, within supported inference semantics | General traversal over packed depth-first nodes, specialized for uniform LT or LE splits |
 
 Compact eligibility requires finite numerical LE splits, identical feature,
 threshold, operator and missing direction within each level, and uniform leaf

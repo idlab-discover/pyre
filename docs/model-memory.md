@@ -28,7 +28,7 @@ hashes, worker hash, and Balsa/Pyre/tool source hashes.
 | `metadata` | Model attributes, postprocessor text, target/class IDs and shapes |
 | `extensions` | Extension list slots, names and payloads; Pyre currently rejects nonempty extensions |
 | `containers` | Inline model object and tree-list slots, including their embedded list headers |
-| `packed_cpu` | NuMojo compact CPU array payloads; separate from the retained Balsa traversal arrays |
+| `packed_cpu` | NuMojo symmetric and depth-first general CPU array payloads; separate from the retained Balsa traversal arrays |
 | `wrapper` | Additional inline Forest fields and the executor's initial state allocation |
 
 Each enumerated payload allocation is counted once: headers embedded in a tree or extension are
