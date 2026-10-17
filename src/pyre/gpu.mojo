@@ -2,7 +2,7 @@
 from balsa import Model, NodeType, Operator, TaskType
 from max.gpu.host import DeviceContext, DeviceBuffer, DeviceAttribute
 from std.math import ceildiv, inf, nextafter
-from std.sys import size_of
+from std.sys import size_of, has_apple_gpu_accelerator
 from numojo.core.type_aliases import Shape
 from ._validation import validate_inference
 from ._gpu_storage import (
@@ -15,7 +15,8 @@ from ._gpu_storage import (
 )
 from ._gpu_kernel import (
     predict_kernel,
-    float64_key,
+    keyed,
+    threshold_key,
     OP_LT,
     OP_LE,
     OP_EQ,
@@ -28,6 +29,16 @@ from std.memory import bitcast
 
 # A batch is a rank-two GPU array; results use the same checked storage type.
 comptime GpuBatch[dtype: DType] = GpuArray[dtype, 2]
+
+comptime _FP64_ERROR = (
+    "Pyre GPU float64 inference requires FP64 device support; Apple GPUs have"
+    " none. Use float32 or the CPU Forest"
+)
+
+
+def _has_fp64() -> Bool:
+    """Whether the compiled GPU target can run float64 kernels."""
+    return not has_apple_gpu_accelerator()
 
 
 def _pack[
@@ -115,13 +126,17 @@ def _pack[
                 parents.append(-1)
             var at = words * position
             comptime if dtype == DType.float32:
-                nodes[unsafe_offset=at] = bitcast[DType.uint32, 1](value)
+                var bits = bitcast[DType.uint32, 1](value)
+                comptime if keyed[dtype]():
+                    if tree.node_type[n] != NodeType.LEAF:
+                        bits = bitcast[DType.uint32, 1](threshold_key(value))
+                nodes[unsafe_offset=at] = bits
                 if words == 4:
                     nodes[unsafe_offset=at + 1] = 0
             else:
                 var bits = bitcast[DType.uint64, 1](value)
                 if tree.node_type[n] != NodeType.LEAF:
-                    bits = bitcast[DType.uint64, 1](float64_key(Float64(value)))
+                    bits = bitcast[DType.uint64, 1](threshold_key(value))
                 var halves = bitcast[DType.uint32, 2](bits)
                 nodes[unsafe_offset=at] = halves[0]
                 nodes[unsafe_offset=at + 1] = halves[1]
@@ -150,12 +165,16 @@ struct GpuForest[dtype: DType = DType.float32](Movable):
     var _trees: Int
     var _classifier: Bool
     var _average: Int32
-    var _bias: Float64
+    var _bias: Scalar[Self.dtype]
+    var _bias_low: Scalar[Self.dtype]
     var _alpha: Float32
     var _sms: Int
 
     def __init__(out self, model: Model[Self.dtype], ctx: DeviceContext) raises:
         _gpu(ctx)
+        comptime if Self.dtype == DType.float64:
+            if not _has_fp64() or ctx.api() == "metal":
+                raise Error(_FP64_ERROR)
         _ = validate_inference(model)
         var count = 0
         var widest = 0
@@ -192,7 +211,10 @@ struct GpuForest[dtype: DType = DType.float32](Movable):
         self._trees = len(model.trees)
         self._classifier = model.task_type == TaskType.BINARY_CLF
         self._average = Int32(model.average_tree_output != 0)
-        self._bias = model.base_scores[0]
+        # Split the Float64 base score so float32 kernels need no FP64.
+        var bias = model.base_scores[0]
+        self._bias = Scalar[Self.dtype](bias)
+        self._bias_low = Scalar[Self.dtype](bias - Float64(self._bias))
         self._alpha = model.sigmoid_alpha
         self._sms = Int(ctx.get_attribute(DeviceAttribute.MULTIPROCESSOR_COUNT))
 
@@ -318,6 +340,9 @@ struct GpuForest[dtype: DType = DType.float32](Movable):
     ) raises:
         comptime if Self.dtype == DType.float64 and words == 2:
             raise Error("Pyre GPU float64 nodes require the wide layout")
+        elif Self.dtype == DType.float64 and not _has_fp64():
+            # Never instantiate FP64 kernels for a target that cannot run them.
+            raise Error(_FP64_ERROR)
         else:
             var rows = x._shape[0]
             var nodes = self._nodes.unsafe_ptr().as_imm()
@@ -341,6 +366,7 @@ struct GpuForest[dtype: DType = DType.float32](Movable):
                     Int32(shift),
                     self._average,
                     self._bias,
+                    self._bias_low,
                     self._alpha,
                     threshold,
                     grid_dim=ceildiv(rows, 1 << shift),
@@ -362,6 +388,7 @@ struct GpuForest[dtype: DType = DType.float32](Movable):
                     Int32(shift),
                     self._average,
                     self._bias,
+                    self._bias_low,
                     self._alpha,
                     threshold,
                     grid_dim=ceildiv(rows, 1 << shift),

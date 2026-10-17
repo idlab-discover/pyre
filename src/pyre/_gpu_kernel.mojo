@@ -10,8 +10,9 @@ Node encoding (see `_pack` in `gpu.mojo`): every split is normalized so that a
 true condition selects the distant child at `node + offset`, a false condition
 the adjacent child at `node + 1`, and a leaf has offset zero. The condition is
 `x < t`, `x <= t` or `x == t`; NaN compares false and goes to the adjacent child
-unless the default-distant bit is set. Float64 split thresholds hold
-`float64_key` integers instead of IEEE values; leaves hold values.
+unless the default-distant bit is set. Keyed split thresholds (always for
+float64, and for float32 on targets that flush subnormals) hold `order_key`
+integers instead of IEEE values; leaves hold values.
 """
 from std.gpu import block_idx, block_dim, thread_idx, lane_id, WARP_SIZE
 from max.gpu.sync import barrier
@@ -19,6 +20,7 @@ from max.gpu.memory import external_memory, AddressSpace
 from std.gpu.primitives import warp
 from std.math import isnan, exp
 from std.memory import bitcast
+from std.sys import has_apple_gpu_accelerator
 
 # Normalized operator codes stored in bits 29-30 of the metadata word.
 comptime OP_LT = UInt32(0)
@@ -32,6 +34,21 @@ comptime COMPACT_FEATURE_BITS = 13
 comptime WIDE_FEATURE_BITS = 29
 
 
+def keyed[dtype: DType]() -> Bool:
+    """Whether split thresholds are compared as integer keys.
+
+    Float64 avoids slow (or absent) FP64 compares. Apple GPUs flush float32
+    subnormals, so `x <= 0`, normalized to `x < nextafter(0, inf)`, would
+    compare against zero; integer keys keep every comparison IEEE-exact.
+    """
+    return dtype == DType.float64 or has_apple_gpu_accelerator()
+
+
+comptime _KeyType[
+    dtype: DType
+] = DType.int64 if dtype == DType.float64 else DType.int32
+
+
 @always_inline
 def node_value[
     dtype: DType, words: Int
@@ -43,18 +60,35 @@ def node_value[
         return bitcast[dtype, 1](SIMD[DType.uint32, 2](node[0], node[1]))
 
 
-def float64_key(value: Float64) -> Int64:
+@always_inline
+def order_key[
+    dtype: DType
+](value: Scalar[dtype]) -> Tuple[Scalar[_KeyType[dtype]], Bool]:
     """Order-preserving integer key: sign-magnitude to two's complement.
 
     For non-NaN values, keys compare exactly as IEEE values do, including
-    -0 == +0. A NaN threshold maps to Int64.MIN, which no input key reaches,
-    so every comparison against it is false, as in IEEE.
+    -0 == +0 and subnormals. Also returns whether the value is NaN. Only
+    integer instructions are used, so no FP compare or flush is involved.
     """
-    var bits = bitcast[DType.int64, 1](value)
-    var magnitude = bits & Int64.MAX
-    if magnitude > Int64(0x7FF0000000000000):
-        return Int64.MIN
-    return -magnitude if bits < 0 else magnitude
+    comptime itype = _KeyType[dtype]
+    comptime exponent = 0x7FF0000000000000 if dtype == DType.float64 else 0x7F800000
+    var bits = bitcast[itype, 1](value)
+    var magnitude = bits & Scalar[itype].MAX
+    return (
+        -magnitude if bits < 0 else magnitude,
+        magnitude > Scalar[itype](exponent),
+    )
+
+
+def threshold_key[
+    dtype: DType
+](value: Scalar[dtype]) -> Scalar[_KeyType[dtype]]:
+    """Key for a split threshold. A NaN threshold maps to the minimum key,
+    which no input key reaches, so every comparison is false, as in IEEE."""
+    var key = order_key(value)
+    if key[1]:
+        return Scalar[_KeyType[dtype]].MIN
+    return key[0]
 
 
 @always_inline
@@ -106,16 +140,20 @@ def evaluate_tree[
             break
         var value = row[unsafe_offset=Int(feature)]
         var condition: Bool
-        comptime if dtype == DType.float64:
-            # FP64 compare throughput is low on consumer GPUs; compare
-            # order-preserving integer keys instead (see `float64_key`).
-            var bits = bitcast[DType.int64, 1](value)
-            var magnitude = bits & Int64.MAX
-            var missing = magnitude > Int64(0x7FF0000000000000)
-            var key = -magnitude if bits < 0 else magnitude
-            var threshold = bitcast[DType.int64, 1](
-                SIMD[DType.uint32, 2](node[0], node[1])
-            )
+        comptime if keyed[dtype]():
+            # Compare order-preserving integer keys (see `keyed`).
+            var key, missing = order_key(value)
+            var threshold: Scalar[_KeyType[dtype]]
+            comptime if dtype == DType.float64:
+                threshold = rebind[Scalar[_KeyType[dtype]]](
+                    bitcast[DType.int64, 1](
+                        SIMD[DType.uint32, 2](node[0], node[1])
+                    )
+                )
+            else:
+                threshold = rebind[Scalar[_KeyType[dtype]]](
+                    bitcast[DType.int32, 1](node[0])
+                )
             comptime if general:
                 var op = (meta >> 29) & 3
                 condition = (
@@ -184,7 +222,8 @@ def predict_kernel[
     features: Int32,
     chunk_shift: Int32,
     average: Int32,
-    bias: Float64,
+    bias: Scalar[dtype],
+    bias_low: Scalar[dtype],
     alpha: Float32,
     threshold: Scalar[dtype],
 ):
@@ -220,7 +259,15 @@ def predict_kernel[
             for g in range(1, groves):
                 sum += partial[unsafe_offset=g * chunk + tid]
             finish[mode](
-                y, first + tid, sum, trees, average, bias, alpha, threshold
+                y,
+                first + tid,
+                sum,
+                trees,
+                average,
+                bias,
+                bias_low,
+                alpha,
+                threshold,
             )
     else:
         var lane = lane_id()
@@ -231,7 +278,15 @@ def predict_kernel[
             sum = warp_sum(sum)
             if lane == 0:
                 finish[mode](
-                    y, first + rr, sum, trees, average, bias, alpha, threshold
+                    y,
+                    first + rr,
+                    sum,
+                    trees,
+                    average,
+                    bias,
+                    bias_low,
+                    alpha,
+                    threshold,
                 )
 
 
@@ -244,16 +299,29 @@ def finish[
     total: Scalar[dtype],
     trees: Int32,
     average: Int32,
-    bias: Float64,
+    bias: Scalar[dtype],
+    bias_low: Scalar[dtype],
     alpha: Float32,
     threshold: Scalar[dtype],
 ):
-    """Average, add the base score, apply the output transform and store."""
+    """Average, add the base score, apply the output transform and store.
+
+    The Float64 base score arrives split as `bias + bias_low`. Float32 kernels
+    add it with an error-free two-sum, so no FP64 instruction is emitted (Apple
+    GPUs have none) while the result stays within one ulp of the Float64 add.
+    """
     comptime assert dtype.is_floating_point()
     var sum = total
     if average:
         sum /= Scalar[dtype](Int(trees))
-    var value = Scalar[dtype](Float64(sum) + bias)
+    var value: Scalar[dtype]
+    comptime if dtype == DType.float64:
+        value = sum + bias
+    else:
+        var high = sum + bias
+        var part = high - sum
+        var error = (sum - (high - part)) + (bias - part)
+        value = high + (error + bias_low)
     comptime if mode != 0:
         var z = Scalar[dtype](alpha) * value
         var e = exp(-abs(z))

@@ -4,7 +4,14 @@ from reference_data import check_references
 from balsa import load, Model, ModelBuilder, TreeBuilder, Operator
 from max.gpu.host import DeviceContext
 from pyre import Forest
-from pyre.gpu import GpuForest, GpuBatch, GpuArray, upload, upload_into
+from pyre.gpu import (
+    GpuForest,
+    GpuBatch,
+    GpuArray,
+    upload,
+    upload_into,
+    _has_fp64,
+)
 from pyre._gpu_storage import _Join, _same_device
 from numojo import NDArray
 from numojo.core.type_aliases import Shape, NDArrayStrides
@@ -100,24 +107,39 @@ def test_offsets_capacity_aliasing() raises:
         _same_device(ctx, cpu_context)
 
 
+# Float64 where the target supports it; otherwise float32 keeps coverage.
+comptime _WIDE = DType.float64 if _has_fp64() else DType.float32
+
+
+def test_float64_rejected_without_fp64() raises:
+    comptime if not _has_fp64():
+        var model = stump[DType.float64](Operator.LT, False, False)
+        with assert_raises(contains="FP64"):
+            _ = GpuForest.prepare(model, DeviceContext())
+
+
 def test_preparation_and_independent_contexts() raises:
     var ctx1 = DeviceContext()
     var ctx2 = DeviceContext()
-    var model = stump[DType.float64](Operator.GE, True, False)
+    var model = stump[_WIDE](Operator.GE, True, False)
     var f1 = GpuForest.prepare(model, ctx1)
     var f2 = GpuForest.prepare(model, ctx2)
     model.trees[0].leaf_value[1] = 999
     var moved = f1^
-    var host = NDArray[DType.float64](Shape(1, 1))
+    var host = NDArray[_WIDE](Shape(1, 1))
     host.itemset(0, 0.5)
     var x1 = upload(host, ctx1)
     var x2 = upload(host, ctx2)
     for _ in range(3):
-        assert_equal(moved.predict(x1).to_host().item(0), Float64(-1))
-        assert_equal(f2.predict(x2).to_host().item(0), Float64(-1))
+        assert_equal(moved.predict(x1).to_host().item(0), Scalar[_WIDE](-1))
+        assert_equal(f2.predict(x2).to_host().item(0), Scalar[_WIDE](-1))
     for name in ["category", "vector", "multi_target"]:
-        var unsupported = load[DType.float64](
-            "build/balsa-reference/tests/fixtures/float64_" + name + ".tl"
+        var unsupported = load[_WIDE](
+            "build/balsa-reference/tests/fixtures/"
+            + String(_WIDE)
+            + "_"
+            + name
+            + ".tl"
         )
         with assert_raises():
             _ = GpuForest.prepare(unsupported, ctx1)
@@ -269,7 +291,8 @@ def test_reusable_upload_f32() raises:
 
 
 def test_reusable_upload_f64() raises:
-    reusable_upload[DType.float64]()
+    comptime if _has_fp64():
+        reusable_upload[DType.float64]()
 
 
 def test_upload_into_failure_and_reuse() raises:
@@ -435,7 +458,8 @@ def check_launch_configurations[
 
 def test_launch_configurations() raises:
     check_launch_configurations[DType.float32](37, 5, 7, 70)
-    check_launch_configurations[DType.float64](37, 5, 7, 70)
+    comptime if _has_fp64():
+        check_launch_configurations[DType.float64](37, 5, 7, 70)
     check_launch_configurations[DType.float32](300, 3, 4, 3)
 
 
@@ -512,7 +536,8 @@ def check_threshold_extremes[dtype: DType]() raises:
 
 def test_threshold_extremes() raises:
     check_threshold_extremes[DType.float32]()
-    check_threshold_extremes[DType.float64]()
+    comptime if _has_fp64():
+        check_threshold_extremes[DType.float64]()
 
 
 def main() raises:

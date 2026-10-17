@@ -2,7 +2,7 @@
 from balsa import load, Model, ModelBuilder, TreeBuilder, Operator, TaskType
 from max.gpu.host import DeviceContext
 from pyre import Forest
-from pyre.gpu import GpuForest, upload
+from pyre.gpu import GpuForest, upload, _has_fp64
 from numojo import NDArray
 from numojo.core.type_aliases import Shape
 from std.math import nan, inf
@@ -152,6 +152,11 @@ def check_model[
     assert_equal(rows, len(predictions), context)
     for i in range(len(values)):
         x.itemset(i, values[i])
+    comptime if on_gpu and dtype == DType.float64 and not _has_fp64():
+        # Targets without FP64 must reject float64 forests up front.
+        with assert_raises(contains="FP64"):
+            _ = GpuForest.prepare(model, DeviceContext())
+        return
     var result: Predictions[dtype]
     comptime if on_gpu:
         result = gpu_predictions(model, x, binary, context)
