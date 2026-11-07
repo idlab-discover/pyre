@@ -183,3 +183,31 @@ def pack[
             raise Error("Pyre packing found unreachable nodes")
         base = position
     return used
+
+
+def path_length[dtype: DType](model: Model[dtype]) -> Float64:
+    """Sum over trees of the mean root-to-leaf node count, a per-row cost.
+
+    Every tree contributes at least one evaluated node (its leaf).
+    """
+    var total = Float64(0)
+    var stack = List[Int]()
+    var depths = List[Int]()
+    for tree in model.trees:
+        var leaves = 0
+        var sum = 0
+        stack.append(0)
+        depths.append(1)
+        while len(stack):
+            var n = stack.pop()
+            var d = depths.pop()
+            if tree.node_type[n] == NodeType.LEAF:
+                leaves += 1
+                sum += d
+            else:
+                stack.append(Int(tree.cleft[n]))
+                depths.append(d + 1)
+                stack.append(Int(tree.cright[n]))
+                depths.append(d + 1)
+        total += Float64(sum) / Float64(max(1, leaves))
+    return total

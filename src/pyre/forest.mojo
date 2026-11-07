@@ -9,7 +9,8 @@ struct Forest[dtype: DType = DType.float32](Movable):
 
     Construction inspects structure once. Predictions automatically select a
     supported internal kernel; callers never select a trainer or representation.
-    Compact/constant paths are serial; num_threads bounds generic worker tasks.
+    Constant forests are serial; num_threads bounds worker tasks, which are
+    also limited by estimated work per task.
     """
 
     var _cpu: _CPUPlan[Self.dtype]

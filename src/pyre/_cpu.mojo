@@ -1,7 +1,8 @@
 """Private CPU preparation and execution; Forest is the public interface."""
 
 from std.math import ceildiv, exp, isnan
-from std.sys import simd_width_of
+from std.sys import simd_width_of, size_of
+from std.sys.info import num_physical_cores
 from std.runtime import initialize_runtime
 from std.runtime.asyncrt import parallelism_level
 from ._executor import _Executor
@@ -17,6 +18,7 @@ from ._layout import (
     node_count,
     node_words,
     pack,
+    path_length,
 )
 from balsa import Model, NodeType, TaskType
 from std.memory import bitcast
@@ -38,6 +40,9 @@ comptime _TREE_GROUP = 4
 comptime _WIDE = 32
 comptime _INTERLEAVE = 2
 comptime _SINGLE = 32
+# A task should carry several microseconds of work: waking a pooled worker and
+# joining it costs a few microseconds on typical operating systems.
+comptime _GRAIN_NS = 8000.0
 # Operator specializations of the packed generic evaluator.
 comptime _OPS_LT = 0
 comptime _OPS_LE = 1
@@ -61,6 +66,9 @@ struct _CPUPlan[dtype: DType = DType.float32](Movable):
     var _roots: NDArray[DType.int32]
     var _words: Int
     var _ops: Int
+    # Mean evaluated nodes per row, for the task-count estimate.
+    var _path: Float64
+    var _cores: Int
     var _executor: _Executor
 
     def __init__(
@@ -74,6 +82,8 @@ struct _CPUPlan[dtype: DType = DType.float32](Movable):
         _ = validate_inference(model)
         self._symmetric = _Symmetric(model)
         self._words = node_words(model)
+        self._path = path_length(model)
+        self._cores = max(1, num_physical_cores())
         self._nodes = NDArray[DType.uint32](
             Shape(max(1, node_count(model) * self._words))
         )
@@ -433,36 +443,37 @@ struct _CPUPlan[dtype: DType = DType.float32](Movable):
         var output = result.unsafe_ptr()
         var blocks = (rows + width - 1) // width
         var workers: Int
-        comptime if compact != 0:
+        comptime if compact == _CONSTANT:
             if num_threads < 0:
                 raise Error(
                     "num_threads must be nonnegative (0 selects automatic)"
                 )
-            # Compact scheduling is serial until the separate concurrency work.
+            # A constant forest only stores; tasks cost more than they save.
             workers = 1
         else:
-            workers = self._workers(rows, blocks, num_threads)
-
-        var bins = NDArray[DType.uint8](Shape(0))
-        comptime if compact == 2:
-            bins = NDArray[DType.uint8](
-                Shape(self.num_features(), max(width, _ROW_TILE))
-            )
-        var bin_output = bins.unsafe_ptr()
+            workers = self._workers[compact](rows, blocks, num_threads)
 
         # Each task owns whole SIMD blocks. Model/input captures are borrowed;
         # The executor joins before result storage or either borrow can expire.
         def work(
             task: Int,
-        ) {self, x, output, rows, blocks, workers, threshold, bin_output}:
+        ) {self, x, output, rows, blocks, workers, threshold}:
             var begin = blocks * task // workers
             var end = blocks * (task + 1) // workers
             # Tile inside the existing partition, never partition by tile count.
             # Each concurrent call owns its scratch until the executor joins.
-            var tile_blocks = max(1, _ROW_TILE // width)
-            var scratch = List[SIMD[Self.dtype, width]](capacity=tile_blocks)
-            for _ in range(tile_blocks):
-                scratch.append(SIMD[Self.dtype, width](0))
+            comptime tile_blocks = max(1, _ROW_TILE // width)
+            # Only quantized tasks allocate: each bins its current tile.
+            var bins = List[UInt8](
+                unsafe_uninit_length=self.num_features()
+                * tile_blocks
+                * width if compact
+                == _BINNED else 0
+            )
+            var bin_output = bins.unsafe_ptr()
+            var scratch = InlineArray[SIMD[Self.dtype, width], tile_blocks](
+                uninitialized=True
+            )
             for tile in range(begin, end, tile_blocks):
                 var size = min(tile_blocks, end - tile)
                 comptime if compact == 2:
@@ -609,21 +620,32 @@ struct _CPUPlan[dtype: DType = DType.float32](Movable):
         """Raw margins [rows]. num_threads=0 auto, 1 serial, >1 a task limit."""
         return self._predict[width, Self.dtype, 0](x, num_threads)
 
-    def _workers(self, rows: Int, blocks: Int, num_threads: Int) raises -> Int:
+    def _workers[
+        compact: Int
+    ](self, rows: Int, blocks: Int, num_threads: Int) raises -> Int:
+        """Tasks for a call: bounded by blocks, the limit and estimated work.
+
+        num_threads=0 caps at physical cores, since SMT siblings contend for the
+        same gather and load units. Explicit limits also drop tasks that would
+        carry less than one grain of work, which only adds scheduling latency.
+        """
         if num_threads < 0:
             raise Error("num_threads must be nonnegative (0 selects automatic)")
         if num_threads == 1 or blocks < 2:
             return 1
-        if num_threads == 0 and (rows < 256 or rows * self.num_trees() < 8192):
+        # Order-of-magnitude per-node cost: quantized symmetric levels are a
+        # byte compare; packed traversal scales with input element size.
+        comptime visit_ns = 0.4 if compact == _BINNED else 0.25 * Float64(
+            size_of[Scalar[Self.dtype]]()
+        )
+        var tasks = Int(Float64(rows) * self._path * visit_ns / _GRAIN_NS)
+        if tasks < 2:
             return 1
         initialize_runtime()
-        var limit = min(8, parallelism_level()) if num_threads == 0 else min(
-            num_threads, parallelism_level()
-        )
-        # Intermediate workloads use fewer tasks to limit scheduling variability.
-        if num_threads == 0 and rows * self.num_trees() < 32768:
-            limit = min(limit, 4)
-        return max(1, min(blocks, limit))
+        var limit = self._cores
+        if num_threads > 0:
+            limit = min(num_threads, parallelism_level())
+        return max(1, min(blocks, limit, tasks))
 
     def predict(
         self, x: NDArray[Self.dtype], *, num_threads: Int = 0
