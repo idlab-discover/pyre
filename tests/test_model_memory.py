@@ -34,9 +34,14 @@ class ModelMemoryTests(unittest.TestCase):
                 self.assertEqual(report["groups"]["inference"]["logical_bytes"], node_bytes + 8)
                 self.assertEqual(report["groups"]["unsupported_semantics"]["logical_bytes"], 33)
                 # A packed constant tree retains one typed leaf, two split and
-                # leaf offsets, and two border offsets for its one feature.
+                # leaf offsets, two border offsets for its one feature, one
+                # packed node (two or four words) and one root.
                 self.assertEqual(report["groups"]["packed_cpu"]["logical_bytes"],
-                                 (4 if dtype == "float32" else 8) + 48)
+                                 (4 if dtype == "float32" else 8) + 48
+                                 + (8 if dtype == "float32" else 16) + 4)
+                self.assertEqual(report["totals"]["retained_bytes"],
+                                 report["groups"]["packed_cpu"]["logical_bytes"]
+                                 + report["groups"]["wrapper"]["logical_bytes"])
 
     def test_all_owned_list_fields_are_visited(self):
         # Fail on upstream schema additions rather than silently undercounting.

@@ -1,4 +1,8 @@
-"""Account for owned Balsa storage; no inference calls or model copies."""
+"""Account for source Balsa storage and Pyre's retained packed storage.
+
+No inference calls or model copies. Forest consumes the model: Balsa groups
+describe the construction input, released once packing completes.
+"""
 from std.sys import argv, size_of
 from balsa import Model, Tree, load_auto
 from balsa.model import Extension
@@ -100,14 +104,14 @@ def audit[dtype: DType](var model: Model[dtype]) raises:
         field("tree.gain_present", "statistics", tree.gain_present)
         extensions("tree.tree_extensions", tree.tree_extensions)
         extensions("tree.node_extensions", tree.node_extensions)
-    # This enforces Pyre's supported subset and transfers the same allocations.
+    # This enforces Pyre's supported subset and consumes the model.
     # No prediction/executor context or input/output buffers are created.
     var forest = Forest(model^)
     print(
         "forest.inline",
         "wrapper",
-        size_of[Forest[dtype]]() - size_of[Model[dtype]](),
-        size_of[Forest[dtype]]() - size_of[Model[dtype]](),
+        size_of[Forest[dtype]](),
+        size_of[Forest[dtype]](),
         sep="\t",
     )
     print(
@@ -117,6 +121,8 @@ def audit[dtype: DType](var model: Model[dtype]) raises:
         size_of[_State](),
         sep="\t",
     )
+    packed("packed.nodes", forest._cpu._nodes)
+    packed("packed.roots", forest._cpu._roots)
     packed("packed.features", forest._cpu._symmetric.features)
     packed("packed.thresholds", forest._cpu._symmetric.thresholds)
     packed("packed.defaults", forest._cpu._symmetric.defaults)

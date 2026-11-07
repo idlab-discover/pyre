@@ -50,7 +50,7 @@ comptime _OPS_ANY = 2
 
 
 struct _CPUPlan[dtype: DType = DType.float32](Movable):
-    """An owned Balsa model with SIMD CPU inference. Input precision must match.
+    """A packed forest with SIMD CPU inference. Input precision must match.
 
     CPU inference vectorizes independent rows, preserving tree summation order.
     Supports scalar regression/identity and binary classification/sigmoid.
@@ -59,7 +59,13 @@ struct _CPUPlan[dtype: DType = DType.float32](Movable):
     var _strategy: Int
     var _constant: Bool
     var _constant_total: Scalar[Self.dtype]
-    var _model: Model[Self.dtype]
+    # Inference facts; Balsa's per-field node storage is released after packing.
+    var _features: Int
+    var _trees: Int
+    var _classifier: Bool
+    var _average: Bool
+    var _bias: Float64
+    var _alpha: Float32
     var _symmetric: _Symmetric[Self.dtype]
     # Depth-first packed nodes (see _layout.mojo) for the generic evaluator.
     var _nodes: NDArray[DType.uint32]
@@ -74,10 +80,11 @@ struct _CPUPlan[dtype: DType = DType.float32](Movable):
     def __init__(
         out self, var model: Model[Self.dtype], *, strategy: Int = _AUTO
     ) raises:
-        """Validate support, pack nodes, recover compact trees, take ownership.
+        """Validate support, pack nodes and recover symmetric trees.
 
-        Pass model^ to transfer an existing model, or model.copy() to retain an
-        independently mutable source. Balsa remains responsible for structure.
+        The model is consumed: only packed storage and scalar facts remain.
+        Pass model.copy() to retain an editable source. Balsa remains
+        responsible for structure.
         """
         _ = validate_inference(model)
         self._symmetric = _Symmetric(model)
@@ -111,7 +118,12 @@ struct _CPUPlan[dtype: DType = DType.float32](Movable):
             # Preserve the exact incoming-zero and ordered-sum semantics.
             for tree in model.trees:
                 self._constant_total += tree.leaf_value[0]
-        self._model = model^
+        self._features = Int(model.num_feature)
+        self._trees = len(model.trees)
+        self._classifier = model.task_type == TaskType.BINARY_CLF
+        self._average = model.average_tree_output != 0
+        self._bias = model.base_scores[0]
+        self._alpha = model.sigmoid_alpha
         self._executor = _Executor()
         self._use_strategy(strategy)
 
@@ -155,13 +167,13 @@ struct _CPUPlan[dtype: DType = DType.float32](Movable):
         return _DIRECT
 
     def num_features(self) -> Int:
-        return Int(self._model.num_feature)
+        return self._features
 
     def num_trees(self) -> Int:
-        return len(self._model.trees)
+        return self._trees
 
     def is_classifier(self) -> Bool:
-        return self._model.task_type == TaskType.BINARY_CLF
+        return self._classifier
 
     def _check(self, x: NDArray[Self.dtype]) raises:
         if x.ndim != 2:
@@ -332,13 +344,11 @@ struct _CPUPlan[dtype: DType = DType.float32](Movable):
     def _finish[
         width: Int
     ](self, var total: SIMD[Self.dtype, width]) -> SIMD[Self.dtype, width]:
-        if self._model.average_tree_output != 0:
+        if self._average:
             total /= Scalar[Self.dtype](self.num_trees())
         # Treelite stores base scores as Float64, even for float32 forests.
         # Add in that precision before narrowing to the prediction dtype.
-        return (total.cast[DType.float64]() + self._model.base_scores[0]).cast[
-            Self.dtype
-        ]()
+        return (total.cast[DType.float64]() + self._bias).cast[Self.dtype]()
 
     def _predict_default[
         output_dtype: DType, mode: Int
@@ -548,10 +558,7 @@ struct _CPUPlan[dtype: DType = DType.float32](Movable):
                     comptime if mode != 0:
                         # Stable vector sigmoid; intermediate magnitudes stay <= 1.
                         comptime assert Self.dtype.is_floating_point()
-                        var z = (
-                            Scalar[Self.dtype](self._model.sigmoid_alpha)
-                            * value
-                        )
+                        var z = Scalar[Self.dtype](self._alpha) * value
                         var magnitude = abs(z)
                         var e = exp(-magnitude)
                         # Some CPU exp lowerings clamp extreme arguments to a

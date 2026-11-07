@@ -1,4 +1,4 @@
-"""Measure Balsa allocations retained by Pyre, using a native worker."""
+"""Measure source Balsa storage and Pyre's retained packed storage natively."""
 
 import argparse
 from collections import defaultdict
@@ -51,6 +51,8 @@ def parse_worker(output):
     totals = {key: sum(group[key] for group in groups.values())
               for key in ("logical_bytes", "capacity_bytes")}
     totals["spare_capacity_bytes"] = totals["capacity_bytes"] - totals["logical_bytes"]
+    # Forest consumes the Balsa model; only packed arrays and its wrapper remain.
+    totals["retained_bytes"] = sum(groups[g]["logical_bytes"] for g in ("packed_cpu", "wrapper"))
     return dict(**metadata, fields=dict(fields), groups=dict(groups), totals=totals)
 
 

@@ -5,7 +5,7 @@ from ._cpu import _CPUPlan
 
 
 struct Forest[dtype: DType = DType.float32](Movable):
-    """Own a validated model and CPU execution plan, using NuMojo inputs/outputs.
+    """Own a validated, packed CPU execution plan, using NuMojo inputs/outputs.
 
     Construction inspects structure once. Predictions automatically select a
     supported internal kernel; callers never select a trainer or representation.
