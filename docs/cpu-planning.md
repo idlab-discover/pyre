@@ -34,8 +34,9 @@ flowchart TD
 |---|---|
 | Every tree consists of one leaf root | Cache the ordered sum at construction; apply averaging/base score and output transform at prediction |
 | Every tree meets compact eligibility; byte bins have reuse; at least 256 rows | Symmetric evaluation with per-call feature bins |
+| Every tree meets compact eligibility; exactly one row | Packed general traversal, many trees per vector |
 | Every tree meets compact eligibility; bin policy is not selected | Symmetric evaluation with direct float comparisons |
-| Otherwise, within supported inference semantics | General traversal, including the existing all-LT specialization |
+| Otherwise, within supported inference semantics | Packed general traversal, specialized for all-LT, all-LE or mixed operators |
 
 Compact eligibility requires finite numerical LE splits, identical feature,
 threshold, operator and missing direction within each level, and uniform leaf
@@ -55,11 +56,11 @@ no split, and a constant contribution. A stump has one split and two leaves
 (three Balsa nodes); every stump may split on a different feature. Stumps are
 structurally symmetric, although operator and binning eligibility still apply.
 
-CPU execution stays pure Mojo. Input, result, packed arrays and byte scratch
-remain NuMojo-owned. The original Balsa model is retained, so compact preparation
-still increases resident model storage. Constant and symmetric execution remain
-serial; existing general scheduling is unchanged. Concurrency redesign and GPU
-changes are outside this work.
+CPU execution stays pure Mojo. Input, result and packed arrays remain
+NuMojo-owned. Every forest is packed depth-first for general traversal; the
+Balsa model is released after construction, so resident storage is the packed
+nodes plus any symmetric arrays. Symmetric and general execution share the
+work-based scheduler; constant forests remain serial.
 
 ## Trainer-independent fixtures
 

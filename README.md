@@ -58,14 +58,16 @@ For use from another project, see the [precompiled release bundle](docs/distribu
 | `forest.predict_class(x)` | Int64 labels, threshold 0.5 |
 
 Inputs are contiguous `[rows, features]` arrays matching the model's precision.
-`Forest(model^)` takes ownership; `Forest(model.copy())` retains your original.
+`Forest(model^)` consumes the model into packed storage; `Forest(model.copy())`
+retains your original.
 Construction validates the model and prepares its execution strategy once.
 Categorical splits, vector leaves, and multiclass/multi-target output are not supported.
 
-CPU calls use `num_threads=0` for conservative automatic scheduling; an explicit
-positive value sets a per-call task limit. Constant and compact symmetric paths
-currently run serially. `GpuForest` uses explicit device storage and completes
-calls before returning; `*_into` methods reuse output allocations. GPU execution
+CPU calls use `num_threads=0` for work-based automatic scheduling up to the
+physical core count; an explicit positive value sets a per-call task limit.
+Only constant forests always run serially. `GpuForest` uses explicit device
+storage and completes calls before returning; `*_into` methods reuse output
+allocations, which roughly halves small-batch GPU latency. GPU execution
 has been validated on an RTX 5090; other GPU targets remain unvalidated.
 See the [user guide](docs/usage.md) and [GPU example](examples/predict_gpu.mojo).
 

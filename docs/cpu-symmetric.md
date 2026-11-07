@@ -51,11 +51,10 @@ validation are not part of warm prediction timings.
 
 `Forest(model^)`, all four inference APIs, dtype matching, explicit SIMD widths,
 output shapes, contiguous offset views, and argument validation remain supported.
-The compact and constant evaluators execute serially. Nonnegative `num_threads` values remain
-accepted but do not schedule compact workers; negative values still raise.
-Existing generic traversal and its scheduler are retained. CPU concurrency policy
-and redesign belong to a subsequent session. GPU files and shared validation are
-unchanged.
+Symmetric evaluation now shares the general work-based scheduler; each
+quantized task bins its own tiles into private byte storage. Constant forests
+remain serial. Negative `num_threads` values still raise. Single-row calls use
+packed general traversal, which overlaps many trees' load chains.
 
 NuMojo ownership does not prevent these optimizations. Owned arrays can hold
 compact split metadata, reordered leaves, and contiguous feature-major byte

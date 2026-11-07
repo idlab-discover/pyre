@@ -60,46 +60,48 @@ feature count. Empty batches and contiguous offset views work; strided input
 requires an explicit contiguous copy. `predict` is regression-only; binary labels
 use their own typed operation.
 
-The compact and constant CPU paths currently execute serially. They accept the existing
-nonnegative `num_threads` argument for API compatibility but do not schedule
-workers. The general CPU evaluator retains its existing concurrency behavior.
+Constant forests execute serially; they accept nonnegative `num_threads` but
+never schedule workers. The general and compact symmetric evaluators share the
+scheduler described under CPU threading.
 
 ## SIMD and supported semantics
 
-Traversal operates on groups of independent rows using pointer gathers, SIMD
-comparisons, child selection, accumulation, averaging and bias. Finished lanes
-stay at their leaf and partial batches mask input reads; single-row blocks use
-scalar traversal. All four `Forest` prediction methods accept a compile-time
-`width` parameter. Without an explicit width, batches of at least 32 rows use
-16-row groups on targets whose native SIMD widths are eight Float32 lanes and
-four Float64 lanes. With an explicit thread limit greater than one, widening
-also requires enough 16-row groups to meet that limit. Other calls use
-`simd_width_of[dtype]()`. Explicit widths always override this selection: use
-`predict[16](x, num_threads=1)` to force 16-row SIMD groups, or
-`predict_margin[1](x, num_threads=1)` for a scalar comparison. Width must be a
-positive power of two. A logical width can span multiple hardware registers;
-choose it by benchmarking the target CPU and model. Binary sigmoid
-and label conversion run inside each worker with one output allocation, without
-intermediate margin/probability arrays. Tree summation order is preserved. Base
-scores are added in their Balsa Float64 precision before narrowing the result.
-For forests that do not use the compact path, Pyre checks whether every
-numerical split uses LT. Each prediction dispatches once to an LT-only or
-general kernel. Compile-time
-specialization removes operator loads and the five-way comparison from the
-LT-only kernel; mixed/EQ/LE/GT/GE forests retain general semantics. Leaf metadata
-does not affect generic operator dispatch. Compact packing happens only at
-construction; there is no runtime code generation.
-Run `pixi run assembly` to inspect vector code generation.
+Construction packs every tree depth-first into the same normalized node format
+as the GPU (8-byte float32 nodes, otherwise 16 bytes): a true comparison jumps
+to the distant child, a false one moves to the next node, and GT/GE exchange
+children. Unlike the GPU, CPU packing keeps LE and raw float64 thresholds, so
+workers that flush denormals cannot shift a threshold. The Balsa model is then
+released; the forest retains only packed arrays and scalar settings.
+
+Traversal advances groups of independent rows with one 64-bit node gather and
+one input gather per level, then SIMD comparison and child selection. Finished
+lanes step by zero and tail lanes repeat the block's first valid row, so no
+gather needs a mask. Two consecutive trees are walked together in one wide
+vector so their dependent gather chains overlap; leaves are still added in
+original tree order, so results are bit-identical to one-tree-at-a-time
+summation. A single-row call instead walks up to 32 consecutive trees per
+vector (halving for remainders). Each prediction dispatches once to an all-LT,
+all-LE or general-operator kernel; homogeneous kernels have no operator decode.
+
+All four `Forest` prediction methods accept a compile-time `width` parameter.
+Without one, batches of at least 32 rows use 32-row groups: with two trees per
+walk this keeps 64 independent lanes in flight, which measured best on AVX2 and
+reflects memory-level parallelism rather than register width. With an explicit
+thread limit greater than one, widening also requires enough 32-row groups to
+meet that limit. Other calls use `simd_width_of[dtype]()`. Explicit widths
+always override this selection, e.g. `predict[16](x, num_threads=1)` or
+`predict_margin[1](x, num_threads=1)`. Width must be a positive power of two.
+Binary sigmoid and label conversion run inside each worker with one output
+allocation, without intermediate margin/probability arrays. Base scores are
+added in their Balsa Float64 precision before narrowing the result. There is
+no runtime code generation. Run `pixi run assembly` to inspect vector code.
 
 Within each worker's row partition, CPU traversal uses 256-row tiles and consecutive
-four-tree groups to reuse model data across rows. Each row's running total carries
-through every group in original tree order; averaging, base score and output
-transform run once afterward. Scratch is private to each worker call and reused
-across its tiles: 1 KiB for Float32 or 2 KiB for Float64 at widths up to 256. Wider
-explicit widths use one SIMD block per tile. The policy favors larger batches and
-deeper forests; one-row calls can pay extra allocation and loop overhead. Tile sizes
-are internal constants, and SIMD selection and worker partitioning are unchanged.
-
+four-tree groups to reuse model data across rows; a tile with a single block
+walks all trees at once. Each row's running total carries through every group
+in original tree order; averaging, base score and output transform run once
+afterward. Per-tile scratch lives on the worker's stack; only quantized
+symmetric tasks allocate (their byte bins).
 
 Supported: float32 and float64 numerical scalar leaves; EQ/LT/LE/GT/GE; NaN default
 routing; root-only/uneven-depth trees; single-output regression/identity and
@@ -109,14 +111,14 @@ extensions and other task/transform combinations are rejected. Leaf-ID/per-tree 
 
 ## CPU threading
 
-The following scheduler policy applies to the general evaluator. Compact CPU
-inference is currently serial, with concurrency redesign deferred.
-
 Every prediction method accepts keyword `num_threads`: `1` forces serial
 execution, positive values bound task concurrency for that call, and `0` (the
-default) selects a conservative automatic policy: serial below 256 rows or
-8,192 row–tree pairs, at most four workers below 32,768 pairs, and at most eight
-workers for larger workloads. Worker counts are capped by runtime parallelism
+default) selects an automatic policy. Both modes estimate the call's work from
+row count and the forest's mean root-to-leaf path length, and only create tasks
+that each carry several microseconds of it, since waking and joining a pooled
+worker costs a few microseconds. Automatic calls are additionally capped at the
+number of physical cores: SMT siblings share the gather and load units this
+workload saturates. Constant forests stay serial. Worker counts are capped by runtime parallelism
 and the number of SIMD blocks. Negative values raise, including
 on empty input. Work is split into contiguous groups of whole SIMD blocks; each
 worker writes disjoint output rows and reads the immutable forest and input.
@@ -151,13 +153,15 @@ checks the same supported semantics as CPU, and copies the required fields into
 independent resident device arrays. The source model can then be released or
 edited.
 
-Preparation packs every tree depth-first into 8-byte float32 nodes (16 bytes
+Preparation packs every tree depth-first (the CPU's node format) into 8-byte float32 nodes (16 bytes
 for float64, or for float32 forests with more than 8,192 features or trees of
 65,536+ nodes). Splits are normalized so one comparison selects the child:
 GT/GE exchange children, LE becomes LT on the next representable threshold
 (except at +inf), and NaN thresholds keep their always-false routing. Float64
 splits compare order-preserving integer keys, avoiding the low FP64 compare
-rate of consumer GPUs; results are identical to IEEE comparisons. Each block
+rate of consumer GPUs; results are identical to IEEE comparisons. When a
+block's rows fit an 8 KiB budget, float64 inputs are converted to keys once
+per block and staged in shared memory instead of once per visited node. Each block
 evaluates a small power-of-two group of rows, with threads split across trees
 and per-row partials reduced in shared memory. Rows per block and threads per
 block are chosen from row count, tree count and row width, from a sweep on an
@@ -255,7 +259,7 @@ root thresholds and their floating-point neighbors. Unsupported trained
 categorical/vector models are tested for rejection.
 
 Parallel tests also cover shared-forest concurrent calls, all thread controls,
-width 16, zero-feature forests, deep lane divergence and sigmoid extremes.
+explicit widths, zero-feature forests, deep lane divergence and sigmoid extremes.
 Specialization tests exercise all four public operations at widths 1/4/16 in
 both precisions, mixed operators in later nodes/trees, ties, NaNs and uneven
 depths. `pixi run test-specialization` runs this focused suite.
