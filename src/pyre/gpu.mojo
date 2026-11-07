@@ -1,7 +1,7 @@
 """Native, synchronous GPU tree inference with explicit device storage."""
-from balsa import Model, NodeType, Operator, TaskType
+from balsa import Model, TaskType
 from max.gpu.host import DeviceContext, DeviceBuffer, DeviceAttribute
-from std.math import ceildiv, inf, nextafter
+from std.math import ceildiv
 from std.sys import size_of
 from numojo.core.type_aliases import Shape
 from ._validation import validate_inference
@@ -13,128 +13,12 @@ from ._gpu_storage import (
     _gpu,
     _same_device,
 )
-from ._gpu_kernel import (
-    predict_kernel,
-    float64_key,
-    OP_LT,
-    OP_LE,
-    OP_EQ,
-    DEFAULT_DISTANT,
-    COMPACT_OFFSET_BITS,
-    COMPACT_FEATURE_BITS,
-    WIDE_FEATURE_BITS,
-)
-from std.memory import bitcast
+from ._gpu_kernel import predict_kernel
+from ._layout import OP_LT, node_count, node_words, pack
+
 
 # A batch is a rank-two GPU array; results use the same checked storage type.
 comptime GpuBatch[dtype: DType] = GpuArray[dtype, 2]
-
-
-def _pack[
-    dtype: DType
-](
-    model: Model[dtype],
-    nodes: MutPointer[UInt32, _],
-    roots: MutPointer[Int32, _],
-    words: Int,
-) raises -> Bool:
-    """Write depth-first normalized nodes; return whether any split is not LT.
-
-    A true condition selects the distant child, stored after the adjacent
-    child's whole subtree. GT/GE become LE/LT with the children exchanged, and
-    LE becomes LT on the next representable threshold where one exists.
-    """
-    var general = False
-    var base = 0
-    var pending = List[Int32]()
-    var parents = List[Int]()
-    for t in range(len(model.trees)):
-        ref tree = model.trees[t]
-        roots[unsafe_offset=t] = Int32(base)
-        var position = base
-        pending.append(0)
-        parents.append(-1)
-        while len(pending):
-            var n = Int(pending.pop())
-            var parent = parents.pop()
-            if parent >= 0:
-                var offset = UInt32(position - parent)
-                if words == 2:
-                    nodes[unsafe_offset=2 * parent + 1] |= offset
-                else:
-                    nodes[unsafe_offset=4 * parent + 3] = offset
-            var value: Scalar[dtype]
-            var meta = UInt32(0)
-            if tree.node_type[n] == NodeType.LEAF:
-                value = tree.leaf_value[n]
-            else:
-                value = tree.threshold[n]
-                var op = tree.cmp[n]
-                var left_distant = True
-                var code: UInt32
-                if value != value:
-                    # Every comparison with NaN is false, so the split always
-                    # takes the right child; exchanging children would invert it.
-                    code = OP_LT
-                elif op == Operator.LT:
-                    code = OP_LT
-                elif op == Operator.LE:
-                    code = OP_LE
-                elif op == Operator.EQ:
-                    code = OP_EQ
-                elif op == Operator.GT:
-                    code = OP_LE
-                    left_distant = False
-                elif op == Operator.GE:
-                    code = OP_LT
-                    left_distant = False
-                else:
-                    raise Error("Pyre GPU does not support this split operator")
-                # For every non-NaN x, x <= t exactly when x < nextafter(t, inf),
-                # except t = +inf, which keeps the general comparison.
-                if code == OP_LE and value != inf[dtype]():
-                    value = nextafter(value, inf[dtype]())
-                    code = OP_LT
-                general |= code != OP_LT
-                var left = tree.cleft[n]
-                var right = tree.cright[n]
-                var distant = left if left_distant else right
-                var adjacent = right if left_distant else left
-                meta = code << 29
-                if (tree.default_left[n] != 0) == left_distant:
-                    meta |= DEFAULT_DISTANT
-                var feature = UInt32(tree.split_index[n])
-                if words == 2:
-                    meta |= feature << COMPACT_OFFSET_BITS
-                else:
-                    meta |= feature
-                # Adjacent child is popped next and stored at position + 1.
-                pending.append(distant)
-                parents.append(position)
-                pending.append(adjacent)
-                parents.append(-1)
-            var at = words * position
-            comptime if dtype == DType.float32:
-                nodes[unsafe_offset=at] = bitcast[DType.uint32, 1](value)
-                if words == 4:
-                    nodes[unsafe_offset=at + 1] = 0
-            else:
-                var bits = bitcast[DType.uint64, 1](value)
-                if tree.node_type[n] != NodeType.LEAF:
-                    bits = bitcast[DType.uint64, 1](float64_key(Float64(value)))
-                var halves = bitcast[DType.uint32, 2](bits)
-                nodes[unsafe_offset=at] = halves[0]
-                nodes[unsafe_offset=at + 1] = halves[1]
-            if words == 2:
-                nodes[unsafe_offset=at + 1] = meta
-            else:
-                nodes[unsafe_offset=at + 2] = meta
-                nodes[unsafe_offset=at + 3] = 0
-            position += 1
-        if position - base != Int(tree.num_nodes):
-            raise Error("Pyre GPU packing found unreachable nodes")
-        base = position
-    return general
 
 
 struct GpuForest[dtype: DType = DType.float32](Movable):
@@ -157,26 +41,15 @@ struct GpuForest[dtype: DType = DType.float32](Movable):
     def __init__(out self, model: Model[Self.dtype], ctx: DeviceContext) raises:
         _gpu(ctx)
         _ = validate_inference(model)
-        var count = 0
-        var widest = 0
-        for tree in model.trees:
-            if count > 2147483647 - Int(tree.num_nodes):
-                raise Error("Pyre GPU forest exceeds Int32 node indexing")
-            count += Int(tree.num_nodes)
-            widest = max(widest, Int(tree.num_nodes))
+        var words = node_words(model)
+        var count = node_count(model)
         var features = Int(model.num_feature)
-        # A distant offset is at most the size of the tree it lives in.
-        var compact = (
-            Self.dtype == DType.float32
-            and widest < (1 << COMPACT_OFFSET_BITS)
-            and features <= (1 << COMPACT_FEATURE_BITS)
-        )
-        if features > (1 << WIDE_FEATURE_BITS):
-            raise Error("Pyre GPU forest exceeds feature indexing")
-        var words = 2 if compact else 4
         var nh = ctx.enqueue_create_host_buffer[DType.uint32](count * words)
         var rh = ctx.enqueue_create_host_buffer[DType.int32](len(model.trees))
-        var general = _pack(model, nh.unsafe_ptr(), rh.unsafe_ptr(), words)
+        var used = pack[keyed=True, strict=False](
+            model, nh.unsafe_ptr(), rh.unsafe_ptr(), words
+        )
+        var general = (used & ~(UInt32(1) << OP_LT)) != 0
         var nd = ctx.enqueue_create_buffer[DType.uint32](count * words)
         var rd = ctx.enqueue_create_buffer[DType.int32](len(model.trees))
         with _Join(ctx):

@@ -6,12 +6,8 @@ accumulates privately. Per-row partials meet in dynamic shared memory and are
 summed by one thread per row when there are few, otherwise by a warp per row. Rows are read from global memory: staging them in
 shared memory measured slower, since it shrinks the L1 that caches nodes.
 
-Node encoding (see `_pack` in `gpu.mojo`): every split is normalized so that a
-true condition selects the distant child at `node + offset`, a false condition
-the adjacent child at `node + 1`, and a leaf has offset zero. The condition is
-`x < t`, `x <= t` or `x == t`; NaN compares false and goes to the adjacent child
-unless the default-distant bit is set. Float64 split thresholds hold
-`float64_key` integers instead of IEEE values; leaves hold values.
+Node encoding: see `_layout.mojo`. The GPU packs keyed float64 thresholds
+and normalizes LE splits to LT wherever possible.
 """
 from std.gpu import block_idx, block_dim, thread_idx, lane_id, WARP_SIZE
 from max.gpu.sync import barrier
@@ -20,16 +16,15 @@ from std.gpu.primitives import warp
 from std.math import isnan, exp
 from std.memory import bitcast
 
-# Normalized operator codes stored in bits 29-30 of the metadata word.
-comptime OP_LT = UInt32(0)
-comptime OP_LE = UInt32(1)
-comptime OP_EQ = UInt32(2)
-comptime DEFAULT_DISTANT = UInt32(1) << 31
-# Compact (two-word, float32) nodes: 13 feature bits above 16 offset bits.
-comptime COMPACT_OFFSET_BITS = 16
-comptime COMPACT_FEATURE_BITS = 13
-# Wide (four-word) nodes: 29 feature bits; offset has its own word.
-comptime WIDE_FEATURE_BITS = 29
+from ._layout import (
+    OP_LT,
+    OP_LE,
+    OP_EQ,
+    DEFAULT_DISTANT,
+    COMPACT_OFFSET_BITS,
+    COMPACT_FEATURE_BITS,
+    WIDE_FEATURE_BITS,
+)
 
 
 @always_inline
@@ -41,20 +36,6 @@ def node_value[
     else:
         comptime assert words == 4
         return bitcast[dtype, 1](SIMD[DType.uint32, 2](node[0], node[1]))
-
-
-def float64_key(value: Float64) -> Int64:
-    """Order-preserving integer key: sign-magnitude to two's complement.
-
-    For non-NaN values, keys compare exactly as IEEE values do, including
-    -0 == +0. A NaN threshold maps to Int64.MIN, which no input key reaches,
-    so every comparison against it is false, as in IEEE.
-    """
-    var bits = bitcast[DType.int64, 1](value)
-    var magnitude = bits & Int64.MAX
-    if magnitude > Int64(0x7FF0000000000000):
-        return Int64.MIN
-    return -magnitude if bits < 0 else magnitude
 
 
 @always_inline
