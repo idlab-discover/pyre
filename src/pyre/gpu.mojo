@@ -316,7 +316,9 @@ struct GpuForest[dtype: DType = DType.float32](Movable):
         self, x: GpuBatch[Self.dtype]
     ) raises -> GpuArray[Self.dtype, 1]:
         self._check_input(x)
-        var result = GpuArray[Self.dtype, 1](self._context, Shape(x._shape[0]))
+        var result = GpuArray[Self.dtype, 1](
+            self._context, Shape(x._shape[0]), _ordered=True
+        )
         self.predict_margin_into(x, result)
         return result^
 
@@ -324,7 +326,9 @@ struct GpuForest[dtype: DType = DType.float32](Movable):
         self, x: GpuBatch[Self.dtype]
     ) raises -> GpuArray[Self.dtype, 1]:
         self._check_input(x)
-        var result = GpuArray[Self.dtype, 1](self._context, Shape(x._shape[0]))
+        var result = GpuArray[Self.dtype, 1](
+            self._context, Shape(x._shape[0]), _ordered=True
+        )
         self.predict_into(x, result)
         return result^
 
@@ -333,7 +337,7 @@ struct GpuForest[dtype: DType = DType.float32](Movable):
     ) raises -> GpuArray[Self.dtype, 2]:
         self._check_input(x)
         var result = GpuArray[Self.dtype, 2](
-            self._context, Shape(x._shape[0], 2)
+            self._context, Shape(x._shape[0], 2), _ordered=True
         )
         self.predict_proba_into(x, result)
         return result^
@@ -342,6 +346,8 @@ struct GpuForest[dtype: DType = DType.float32](Movable):
         self, x: GpuBatch[Self.dtype], threshold: Scalar[Self.dtype] = 0.5
     ) raises -> GpuArray[DType.int64, 1]:
         self._check_input(x)
-        var result = GpuArray[DType.int64, 1](self._context, Shape(x._shape[0]))
+        var result = GpuArray[DType.int64, 1](
+            self._context, Shape(x._shape[0]), _ordered=True
+        )
         self.predict_class_into(x, result, threshold)
         return result^

@@ -64,6 +64,14 @@ struct GpuArray[dtype: DType, rank: Int = 2](Movable):
     var _size: Int
 
     def __init__(out self, context: DeviceContext, shape: Shape) raises:
+        self = Self(context, shape, _ordered=True)
+        context.synchronize()
+
+    def __init__(
+        out self, context: DeviceContext, shape: Shape, *, _ordered: Bool
+    ) raises:
+        """Stream-ordered allocation; only work on `context`'s stream may use
+        the storage before a completed join. Pyre outputs then join once."""
         _gpu(context)
         var count = _count[Self.dtype, Self.rank](shape)
         self._context = context.copy()
@@ -71,7 +79,6 @@ struct GpuArray[dtype: DType, rank: Int = 2](Movable):
         self._shape = shape.copy()
         self._offset = 0
         self._size = count
-        context.synchronize()
 
     def __init__(
         out self,
