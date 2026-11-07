@@ -1,13 +1,25 @@
 """Private CPU preparation and execution; Forest is the public interface."""
 
-from std.math import exp, isnan
+from std.math import ceildiv, exp, isnan
 from std.sys import simd_width_of
 from std.runtime import initialize_runtime
 from std.runtime.asyncrt import parallelism_level
 from ._executor import _Executor
 from ._validation import validate_inference
 from ._symmetric import _Symmetric
-from balsa import Model, NodeType, Operator, TaskType
+from ._layout import (
+    OP_LT,
+    OP_LE,
+    DEFAULT_DISTANT,
+    COMPACT_OFFSET_BITS,
+    COMPACT_FEATURE_BITS,
+    WIDE_FEATURE_BITS,
+    node_count,
+    node_words,
+    pack,
+)
+from balsa import Model, NodeType, TaskType
+from std.memory import bitcast
 from numojo import NDArray
 from numojo.core.type_aliases import Shape
 
@@ -21,6 +33,15 @@ comptime _BINNED = 2
 comptime _CONSTANT = 3
 comptime _ROW_TILE = 256
 comptime _TREE_GROUP = 4
+# Gather traversal is latency-bound: 32-row blocks walking two trees at once
+# keep 64 lanes in flight; one-row calls walk up to 32 trees per vector.
+comptime _WIDE = 32
+comptime _INTERLEAVE = 2
+comptime _SINGLE = 32
+# Operator specializations of the packed generic evaluator.
+comptime _OPS_LT = 0
+comptime _OPS_LE = 1
+comptime _OPS_ANY = 2
 
 
 struct _CPUPlan[dtype: DType = DType.float32](Movable):
@@ -35,19 +56,42 @@ struct _CPUPlan[dtype: DType = DType.float32](Movable):
     var _constant_total: Scalar[Self.dtype]
     var _model: Model[Self.dtype]
     var _symmetric: _Symmetric[Self.dtype]
-    var _lt_only: Bool
+    # Depth-first packed nodes (see _layout.mojo) for the generic evaluator.
+    var _nodes: NDArray[DType.uint32]
+    var _roots: NDArray[DType.int32]
+    var _words: Int
+    var _ops: Int
     var _executor: _Executor
 
     def __init__(
         out self, var model: Model[Self.dtype], *, strategy: Int = _AUTO
     ) raises:
-        """Validate support, recover compact CPU trees, then take ownership.
+        """Validate support, pack nodes, recover compact trees, take ownership.
 
         Pass model^ to transfer an existing model, or model.copy() to retain an
         independently mutable source. Balsa remains responsible for structure.
         """
-        var lt_only = validate_inference(model)
+        _ = validate_inference(model)
         self._symmetric = _Symmetric(model)
+        self._words = node_words(model)
+        self._nodes = NDArray[DType.uint32](
+            Shape(max(1, node_count(model) * self._words))
+        )
+        self._roots = NDArray[DType.int32](Shape(len(model.trees)))
+        # Strict packing keeps LE: workers flush denormals, so a nextafter
+        # threshold above zero could compare as zero.
+        var used = pack[keyed=False, strict=True](
+            model,
+            self._nodes.unsafe_ptr(),
+            self._roots.unsafe_ptr(),
+            self._words,
+        )
+        if used & ~(UInt32(1) << OP_LT) == 0:
+            self._ops = _OPS_LT
+        elif used & ~(UInt32(1) << OP_LE) == 0:
+            self._ops = _OPS_LE
+        else:
+            self._ops = _OPS_ANY
         self._strategy = strategy
         self._constant = True
         self._constant_total = 0
@@ -57,7 +101,6 @@ struct _CPUPlan[dtype: DType = DType.float32](Movable):
             # Preserve the exact incoming-zero and ordered-sum semantics.
             for tree in model.trees:
                 self._constant_total += tree.leaf_value[0]
-        self._lt_only = lt_only
         self._model = model^
         self._executor = _Executor()
         self._use_strategy(strategy)
@@ -95,6 +138,10 @@ struct _CPUPlan[dtype: DType = DType.float32](Movable):
             return _GENERAL
         if self._symmetric.binned and rows >= 256:
             return _BINNED
+        if rows == 1:
+            # One row walks many trees per vector on packed nodes, overlapping
+            # their load chains; symmetric levels would fill one lane.
+            return _GENERAL
         return _DIRECT
 
     def num_features(self) -> Int:
@@ -118,8 +165,32 @@ struct _CPUPlan[dtype: DType = DType.float32](Movable):
         ):
             raise Error("Pyre MVP requires C-contiguous input")
 
+    @always_inline
+    def _condition[
+        ops: Int, width: Int
+    ](
+        self,
+        value: SIMD[Self.dtype, width],
+        threshold: SIMD[Self.dtype, width],
+        meta: SIMD[DType.uint32, width],
+    ) -> SIMD[DType.bool, width]:
+        """True selects the distant child; NaN takes it only by default."""
+        var condition: SIMD[DType.bool, width]
+        comptime if ops == _OPS_LT:
+            condition = value.lt(threshold)
+        elif ops == _OPS_LE:
+            condition = value.le(threshold)
+        else:
+            var op = (meta >> 29) & 3
+            condition = (
+                (op.eq(OP_LT) & value.lt(threshold))
+                | (op.eq(OP_LE) & value.le(threshold))
+                | (op.gt(OP_LE) & value.eq(threshold))
+            )
+        return condition | (isnan(value) & (meta & DEFAULT_DISTANT).ne(0))
+
     def _tree_range[
-        width: Int, lt_only: Bool
+        width: Int, words: Int, ops: Int
     ](
         self,
         x: NDArray[Self.dtype],
@@ -129,88 +200,124 @@ struct _CPUPlan[dtype: DType = DType.float32](Movable):
         end: Int,
         var total: SIMD[Self.dtype, width],
     ) -> SIMD[Self.dtype, width]:
+        """Continue `total` over trees [begin, end) in original tree order.
+
+        Independent group sums would change floating-point association.
+        """
         comptime assert Self.dtype.is_floating_point()
-        # Continue the incoming total in original tree order. Independent group
-        # sums would change floating-point association.
-        var input = x.unsafe_ptr()
+        comptime assert words == 4 or Self.dtype == DType.float32
+        var roots = self._roots.unsafe_ptr()
+        var features = self.num_features()
+        # 64-bit block base; in-block lane offsets fit Int32 (checked per call).
+        var input = x.unsafe_ptr().unsafe_offset(row * features)
         comptime if width == 1:
-            # A scalar fallback avoids masked-gather overhead on one-row calls.
-            for tree_id in range(begin, end):
-                ref tree = self._model.trees[tree_id]
-                var node = 0
-                while tree.node_type[node] != NodeType.LEAF:
-                    var value = input[
-                        unsafe_offset=row * self.num_features()
-                        + Int(tree.split_index[node])
-                    ]
-                    var threshold = tree.threshold[node]
-                    var left: Bool
-                    comptime if lt_only:
-                        left = value < threshold
-                    else:
-                        var op = tree.cmp[node]
-                        left = (
-                            (op == Operator.EQ and value == threshold)
-                            or (op == Operator.LT and value < threshold)
-                            or (op == Operator.LE and value <= threshold)
-                            or (op == Operator.GT and value > threshold)
-                            or (op == Operator.GE and value >= threshold)
-                        )
-                    if isnan(value):
-                        left = tree.default_left[node] != 0
-                    node = Int(tree.cleft[node] if left else tree.cright[node])
-                total += tree.leaf_value[node]
+            # One row: lanes walk consecutive trees, so their dependent load
+            # chains overlap. Leaves are still added in original tree order.
+            var tree = begin
+            # Halve the lane count for remainders: 32, 16, 8, 4, then scalar.
+            comptime for level in range(4):
+                comptime trees = _SINGLE >> level
+                var offsets = SIMD[DType.int32, trees](0)
+                while tree + trees <= end:
+                    var leaves = self._walk[trees, words, ops](
+                        roots.unsafe_offset(tree).unsafe_load[width=trees](),
+                        offsets,
+                        input,
+                    )
+                    comptime for k in range(trees):
+                        total += leaves[k]
+                    tree += trees
+            while tree < end:
+                total += self._walk[1, words, ops](
+                    SIMD[DType.int32, 1](roots[unsafe_offset=tree]),
+                    SIMD[DType.int32, 1](0),
+                    input,
+                )[0]
+                tree += 1
         else:
-            var lanes = SIMD[DType.int64, width](0)
+            var lanes = SIMD[DType.int32, width](0)
             comptime for lane in range(width):
-                lanes[lane] = Int64(lane)
-            var valid = lanes.lt(Int64(count))
-            var row_offsets = (lanes + Int64(row)) * Int64(self.num_features())
-            for tree_id in range(begin, end):
-                ref tree = self._model.trees[tree_id]
-                var ids = SIMD[DType.int32, width](0)
-                var active = valid
-                while True:
-                    # Validation guarantees every reached node is in bounds.
-                    # Finished lanes stay at their leaf; tail lanes stay at root.
-                    # Balsa validates leaf children as -1, internal children >= 0.
-                    var left = tree.cleft.unsafe_ptr().unsafe_gather(ids)
-                    active &= left.ge(0)
-                    if not active.reduce_or():
-                        break
-                    var features = (
-                        tree.split_index.unsafe_ptr()
-                        .unsafe_gather(ids)
-                        .cast[DType.int64]()
+                lanes[lane] = Int32(lane)
+            # Tail lanes repeat the block's first row, so every lane reads a
+            # valid input row and no gather needs a mask. Their sums are unused.
+            lanes = lanes.lt(Int32(count)).select(lanes, 0)
+            var row_offsets = lanes * Int32(features)
+            var tree = begin
+            comptime if _INTERLEAVE > 1:
+                # Walk several trees at once: their dependent gather chains
+                # overlap. Leaves are still added in original tree order.
+                comptime wide = width * _INTERLEAVE
+                var wide_offsets = SIMD[DType.int32, wide](0)
+                comptime for i in range(wide):
+                    wide_offsets[i] = row_offsets[i % width]
+                while tree + _INTERLEAVE <= end:
+                    var ids = SIMD[DType.int32, wide](0)
+                    comptime for i in range(wide):
+                        ids[i] = roots[unsafe_offset=tree + i // width]
+                    var leaves = self._walk[wide, words, ops](
+                        ids, wide_offsets, input
                     )
-                    # Masking is essential: leaf feature indices and absent rows
-                    # are not valid input addresses, even when their result is unused.
-                    var values = input.unsafe_gather(
-                        row_offsets + features, active
-                    )
-                    var thresholds = tree.threshold.unsafe_ptr().unsafe_gather(
-                        ids
-                    )
-                    var defaults = (
-                        tree.default_left.unsafe_ptr().unsafe_gather(ids).ne(0)
-                    )
-                    var right = tree.cright.unsafe_ptr().unsafe_gather(ids)
-                    var condition: SIMD[DType.bool, width]
-                    comptime if lt_only:
-                        condition = values.lt(thresholds)
-                    else:
-                        var ops = tree.cmp.unsafe_ptr().unsafe_gather(ids)
-                        condition = (
-                            (ops.eq(Operator.EQ) & values.eq(thresholds))
-                            | (ops.eq(Operator.LT) & values.lt(thresholds))
-                            | (ops.eq(Operator.LE) & values.le(thresholds))
-                            | (ops.eq(Operator.GT) & values.gt(thresholds))
-                            | (ops.eq(Operator.GE) & values.ge(thresholds))
-                        )
-                    condition = isnan(values).select(defaults, condition)
-                    ids = active.select(condition.select(left, right), ids)
-                total += tree.leaf_value.unsafe_ptr().unsafe_gather(ids, valid)
+                    comptime for k in range(_INTERLEAVE):
+                        total += leaves.slice[width, offset=k * width]()
+                    tree += _INTERLEAVE
+            while tree < end:
+                total += self._walk[width, words, ops](
+                    SIMD[DType.int32, width](roots[unsafe_offset=tree]),
+                    row_offsets,
+                    input,
+                )
+                tree += 1
         return total
+
+    @always_inline
+    def _walk[
+        width: Int, words: Int, ops: Int
+    ](
+        self,
+        var ids: SIMD[DType.int32, width],
+        row_offsets: SIMD[DType.int32, width],
+        input: ImmPointer[Scalar[Self.dtype], _],
+    ) -> SIMD[Self.dtype, width]:
+        """Advance every lane from its root to a leaf; return leaf values.
+
+        Finished lanes step by zero, so their gathers stay on the leaf.
+        """
+        comptime compact = words == 2
+        comptime offset_mask = UInt32((1 << COMPACT_OFFSET_BITS) - 1)
+        comptime feature_mask = UInt32(
+            (1 << COMPACT_FEATURE_BITS) - 1
+        ) if compact else UInt32((1 << WIDE_FEATURE_BITS) - 1)
+        comptime feature_shift = COMPACT_OFFSET_BITS if compact else 0
+        var pairs = self._nodes.unsafe_ptr().unsafe_bitcast[UInt64]()
+        while True:
+            var meta: SIMD[DType.uint32, width]
+            var offset: SIMD[DType.int32, width]
+            var low: SIMD[DType.uint64, width]
+            comptime if compact:
+                # One 64-bit gather yields both threshold and meta.
+                low = pairs.unsafe_gather(ids)
+                meta = (low >> 32).cast[DType.uint32]()
+                offset = (meta & offset_mask).cast[DType.int32]()
+            else:
+                var high = pairs.unsafe_gather(ids * 2 + 1)
+                meta = high.cast[DType.uint32]()
+                offset = (high >> 32).cast[DType.int32]()
+                low = pairs.unsafe_gather(ids * 2)
+            var threshold: SIMD[Self.dtype, width]
+            comptime if Self.dtype == DType.float32:
+                threshold = bitcast[Self.dtype, width](low.cast[DType.uint32]())
+            else:
+                threshold = bitcast[Self.dtype, width](low)
+            var active = offset.ne(0)
+            if not active.reduce_or():
+                # Every lane is on a leaf, whose value is in the threshold slot.
+                return threshold
+            var feature = ((meta >> UInt32(feature_shift)) & feature_mask).cast[
+                DType.int32
+            ]()
+            var value = input.unsafe_gather(row_offsets + feature)
+            var condition = self._condition[ops, width](value, threshold, meta)
+            ids += condition.select(offset, active.cast[DType.int32]())
 
     def _finish[
         width: Int
@@ -231,19 +338,16 @@ struct _CPUPlan[dtype: DType = DType.float32](Movable):
         num_threads: Int,
         threshold: Scalar[Self.dtype] = 0.5,
     ) raises -> NDArray[output_dtype]:
-        # Limit the wider default to the native vector sizes measured so far.
-        # Small batches retain native vectors to avoid oversized tail gathers.
-        comptime if (
-            simd_width_of[DType.float32]() == 8
-            and simd_width_of[DType.float64]() == 4
-        ):
-            if x.ndim == 2 and x.shape[0] >= 32:
-                # Do not reduce the available task count below an explicit
-                # limit. Automatic calls have enough blocks at their cutoff.
-                if num_threads <= 1 or (x.shape[0] + 15) // 16 >= num_threads:
-                    return self._predict[16, output_dtype, mode](
-                        x, num_threads, threshold
-                    )
+        # Gather traversal is bound by memory-level parallelism rather than
+        # register width: _WIDE rows times _INTERLEAVE trees keeps about 64
+        # independent lanes in flight. Small batches keep native vectors to
+        # avoid oversized tail gathers.
+        if x.ndim == 2 and x.shape[0] >= _WIDE:
+            # Do not reduce the available task count below an explicit limit.
+            if num_threads <= 1 or ceildiv(x.shape[0], _WIDE) >= num_threads:
+                return self._predict[_WIDE, output_dtype, mode](
+                    x, num_threads, threshold
+                )
         return self._predict[simd_width_of[Self.dtype](), output_dtype, mode](
             x, num_threads, threshold
         )
@@ -259,23 +363,44 @@ struct _CPUPlan[dtype: DType = DType.float32](Movable):
         var route = self.kernel(x.shape[0] if x.ndim == 2 else 0)
         if route == _CONSTANT:
             return self._predict_impl[
-                width, output_dtype, mode, False, _CONSTANT
+                width, output_dtype, mode, 4, _OPS_ANY, _CONSTANT
             ](x, num_threads, threshold)
         if route == _BINNED:
             return self._predict_impl[
-                width, output_dtype, mode, False, _BINNED
+                width, output_dtype, mode, 4, _OPS_ANY, _BINNED
             ](x, num_threads, threshold)
         if route == _DIRECT:
             return self._predict_impl[
-                width, output_dtype, mode, False, _DIRECT
+                width, output_dtype, mode, 4, _OPS_ANY, _DIRECT
             ](x, num_threads, threshold)
         # Inspect the immutable model once at construction, dispatch once per
-        # prediction. The LT kernel has no operator loads or operator dispatch.
-        if self._lt_only:
-            return self._predict_impl[width, output_dtype, mode, True](
-                x, num_threads, threshold
-            )
-        return self._predict_impl[width, output_dtype, mode, False](
+        # prediction. Homogeneous kernels have no operator decode.
+        comptime if Self.dtype == DType.float32:
+            if self._words == 2:
+                return self._generic[width, output_dtype, mode, 2](
+                    x, num_threads, threshold
+                )
+        return self._generic[width, output_dtype, mode, 4](
+            x, num_threads, threshold
+        )
+
+    def _generic[
+        width: Int, output_dtype: DType, mode: Int, words: Int
+    ](
+        self,
+        x: NDArray[Self.dtype],
+        num_threads: Int,
+        threshold: Scalar[Self.dtype],
+    ) raises -> NDArray[output_dtype]:
+        if self._ops == _OPS_LT:
+            return self._predict_impl[
+                width, output_dtype, mode, words, _OPS_LT
+            ](x, num_threads, threshold)
+        if self._ops == _OPS_LE:
+            return self._predict_impl[
+                width, output_dtype, mode, words, _OPS_LE
+            ](x, num_threads, threshold)
+        return self._predict_impl[width, output_dtype, mode, words, _OPS_ANY](
             x, num_threads, threshold
         )
 
@@ -283,7 +408,8 @@ struct _CPUPlan[dtype: DType = DType.float32](Movable):
         width: Int,
         output_dtype: DType,
         mode: Int,
-        lt_only: Bool,
+        words: Int,
+        ops: Int,
         compact: Int = 0,
     ](
         self,
@@ -295,6 +421,9 @@ struct _CPUPlan[dtype: DType = DType.float32](Movable):
             width > 0 and (width & (width - 1)) == 0
         ), "SIMD width must be a positive power of two"
         self._check(x)
+        # Gathers address a block's rows with Int32 lane offsets.
+        if width * self.num_features() > Int(Int32.MAX):
+            raise Error("Pyre SIMD width times feature count exceeds Int32")
         var rows = x.shape[0]
         var result: NDArray[output_dtype]
         comptime if mode == 1:
@@ -352,9 +481,14 @@ struct _CPUPlan[dtype: DType = DType.float32](Movable):
                     else:
                         scratch[i] = SIMD[Self.dtype, width](0)
                 comptime if compact != _CONSTANT:
-                    for group in range(0, self.num_trees(), _TREE_GROUP):
+                    # Groups keep a few trees cache-resident across a tile's
+                    # blocks; a single block has no reuse to protect.
+                    var group_size = (
+                        _TREE_GROUP if size > 1 else self.num_trees()
+                    )
+                    for group in range(0, self.num_trees(), group_size):
                         var group_end = min(
-                            group + _TREE_GROUP, self.num_trees()
+                            group + group_size, self.num_trees()
                         )
                         for i in range(size):
                             var row = (tile + i) * width
@@ -376,7 +510,7 @@ struct _CPUPlan[dtype: DType = DType.float32](Movable):
                             else:
                                 if count == 1:
                                     scratch[i][0] = self._tree_range[
-                                        1, lt_only
+                                        1, words, ops
                                     ](
                                         x,
                                         row,
@@ -387,7 +521,7 @@ struct _CPUPlan[dtype: DType = DType.float32](Movable):
                                     )
                                 else:
                                     scratch[i] = self._tree_range[
-                                        width, lt_only
+                                        width, words, ops
                                     ](
                                         x,
                                         row,

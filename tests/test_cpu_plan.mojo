@@ -76,7 +76,9 @@ def test_fixture_shapes_float64() raises:
 def test_plan_controls_and_small_batches() raises:
     var model = synthetic_model[DType.float32]("symmetric", 16, 4, 4, borders=2)
     var plan = _CPUPlan(model.copy())
-    assert_equal(plan.kernel(1), _DIRECT)
+    # A single row walks packed nodes, many trees per vector.
+    assert_equal(plan.kernel(1), _GENERAL)
+    assert_equal(plan.kernel(2), _DIRECT)
     assert_equal(plan.kernel(255), _DIRECT)
     assert_equal(plan.kernel(256), _BINNED)
     with assert_raises():
