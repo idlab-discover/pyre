@@ -3,8 +3,11 @@
 Each block owns `chunk` consecutive rows (a power of two up to 32). Thread
 `tid` evaluates row `tid % chunk` on trees `tid / chunk`, `+ groves`, ... and
 accumulates privately. Per-row partials meet in dynamic shared memory and are
-summed by one thread per row when there are few, otherwise by a warp per row. Rows are read from global memory: staging them in
-shared memory measured slower, since it shrinks the L1 that caches nodes.
+summed by one thread per row when there are few, otherwise by a warp per row.
+Float32 rows are read from global memory: staging them in shared memory
+measured slower, since it shrinks the L1 that caches nodes. Float64 rows are
+staged as order-preserving keys when small, which removes the per-visit key
+conversion.
 
 Node encoding: see `_layout.mojo`. The GPU packs keyed float64 thresholds
 and normalizes LE splits to LT wherever possible.
@@ -57,17 +60,36 @@ def warp_sum[dtype: DType](value: Scalar[dtype]) -> Scalar[dtype]:
 
 
 @always_inline
+def input_key(value: Float64) -> Int64:
+    """Order-preserving key of an input; NaN maps to the Int64.MIN sentinel.
+
+    Non-NaN keys are never Int64.MIN, and a NaN threshold key is Int64.MIN, so
+    `key < threshold` is false for it as in IEEE. Callers test the sentinel.
+    """
+    var bits = bitcast[DType.int64, 1](value)
+    var magnitude = bits & Int64.MAX
+    if magnitude > Int64(0x7FF0000000000000):
+        return Int64.MIN
+    return -magnitude if bits < 0 else magnitude
+
+
+@always_inline
 def evaluate_tree[
-    dtype: DType, words: Int, general: Bool
+    dtype: DType, words: Int, general: Bool, staged: Bool
 ](
     nodes: ImmPointer[UInt32, ImmutAnyOrigin],
-    root: Int,
+    root: Int32,
     row: ImmPointer[Scalar[dtype], ImmutAnyOrigin],
+    keys: Pointer[Int64, _, address_space=AddressSpace.SHARED],
 ) -> Scalar[dtype]:
+    """Walk one tree for one row. Staged float64 rows read precomputed keys.
+
+    Node indices stay 32-bit: the forest is limited to Int32 node indexing.
+    """
     comptime compact = words == 2
-    var index = root
+    var index = UInt32(root)
     var node = nodes.unsafe_load[width=words, alignment=4 * words](
-        index * words
+        Int(index * UInt32(words))
     )
     while True:
         var meta: UInt32
@@ -85,15 +107,16 @@ def evaluate_tree[
             feature = meta & ((1 << WIDE_FEATURE_BITS) - 1)
         if offset == 0:
             break
-        var value = row[unsafe_offset=Int(feature)]
         var condition: Bool
         comptime if dtype == DType.float64:
             # FP64 compare throughput is low on consumer GPUs; compare
             # order-preserving integer keys instead (see `float64_key`).
-            var bits = bitcast[DType.int64, 1](value)
-            var magnitude = bits & Int64.MAX
-            var missing = magnitude > Int64(0x7FF0000000000000)
-            var key = -magnitude if bits < 0 else magnitude
+            var key: Int64
+            comptime if staged:
+                key = keys[unsafe_offset=Int(feature)]
+            else:
+                key = input_key(Float64(row[unsafe_offset=Int(feature)]))
+            var missing = key == Int64.MIN
             var threshold = bitcast[DType.int64, 1](
                 SIMD[DType.uint32, 2](node[0], node[1])
             )
@@ -106,10 +129,10 @@ def evaluate_tree[
                 )
             else:
                 condition = key < threshold
-            condition = (condition and not missing) or (
-                (meta & DEFAULT_DISTANT) != 0 and missing
-            )
+            if missing:
+                condition = (meta & DEFAULT_DISTANT) != 0
         else:
+            var value = row[unsafe_offset=Int(feature)]
             var threshold = node_value[dtype, words](node)
             comptime if general:
                 var op = (meta >> 29) & 3
@@ -123,30 +146,11 @@ def evaluate_tree[
             condition = condition or (
                 (meta & DEFAULT_DISTANT) != 0 and isnan(value)
             )
-        index += Int(offset) if condition else 1
+        index += offset if condition else 1
         node = nodes.unsafe_load[width=words, alignment=4 * words](
-            index * words
+            Int(index * UInt32(words))
         )
     return node_value[dtype, words](node)
-
-
-@always_inline
-def accumulate[
-    dtype: DType, words: Int, general: Bool
-](
-    nodes: ImmPointer[UInt32, ImmutAnyOrigin],
-    roots: ImmPointer[Int32, ImmutAnyOrigin],
-    row: ImmPointer[Scalar[dtype], ImmutAnyOrigin],
-    first: Int,
-    trees: Int,
-    step: Int,
-) -> Scalar[dtype]:
-    var total = Scalar[dtype](0)
-    for tree in range(first, trees, step):
-        total += evaluate_tree[dtype, words, general](
-            nodes, Int(roots[unsafe_offset=tree]), row
-        )
-    return total
 
 
 def predict_kernel[
@@ -155,6 +159,7 @@ def predict_kernel[
     mode: Int,
     words: Int,
     general: Bool,
+    staged: Bool,
 ](
     nodes: ImmPointer[UInt32, ImmutAnyOrigin],
     roots: ImmPointer[Int32, ImmutAnyOrigin],
@@ -169,7 +174,13 @@ def predict_kernel[
     alpha: Float32,
     threshold: Scalar[dtype],
 ):
+    """Dynamic shared memory: one partial per thread, then staged row keys.
+
+    Staging converts each float64 input of the block's rows to a key once,
+    instead of once per visited node; the host enables it for small rows.
+    """
     comptime assert dtype.is_floating_point()
+    comptime assert not staged or dtype == DType.float64
     var tid = thread_idx.x
     var threads = block_dim.x
     var shift = Int(chunk_shift)
@@ -180,18 +191,22 @@ def predict_kernel[
     var partial = external_memory[
         Scalar[dtype], address_space=AddressSpace.SHARED, alignment=16
     ]()
+    var keys = partial.unsafe_offset(threads).unsafe_bitcast[Int64]()
+    comptime if staged:
+        var base = x.unsafe_offset(first * width)
+        for i in range(tid, active * width, threads):
+            keys[unsafe_offset=i] = input_key(Float64(base[unsafe_offset=i]))
+        barrier()
     var r = tid & (chunk - 1)
     var groves = threads >> shift
     var total = Scalar[dtype](0)
     if r < active:
-        total = accumulate[dtype, words, general](
-            nodes,
-            roots,
-            x.unsafe_offset((first + r) * width),
-            tid >> shift,
-            Int(trees),
-            groves,
-        )
+        var row = x.unsafe_offset((first + r) * width)
+        var row_keys = keys.unsafe_offset(r * width)
+        for tree in range(tid >> shift, Int(trees), groves):
+            total += evaluate_tree[dtype, words, general, staged](
+                nodes, roots[unsafe_offset=tree], row, row_keys
+            )
     partial[unsafe_offset=tid] = total
     barrier()
     if groves <= 16:

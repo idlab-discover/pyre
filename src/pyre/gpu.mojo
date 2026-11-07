@@ -19,6 +19,8 @@ from ._layout import OP_LT, node_count, node_words, pack
 
 # A batch is a rank-two GPU array; results use the same checked storage type.
 comptime GpuBatch[dtype: DType] = GpuArray[dtype, 2]
+# Shared-memory budget for a block's staged float64 input keys.
+comptime _STAGE_BYTES = 8192
 
 
 struct GpuForest[dtype: DType = DType.float32](Movable):
@@ -129,14 +131,18 @@ struct GpuForest[dtype: DType = DType.float32](Movable):
 
         Grow while the block's rows stay within 512 bytes (node data then
         dominates L1), tasks stay moderate, and the grid keeps at least eight
-        blocks per multiprocessor.
+        blocks per multiprocessor. Staged float64 rows live in shared memory
+        instead of L1; up to eight rows per block measured best for them.
         """
         comptime item = size_of[Scalar[Self.dtype]]()
+        comptime staging = Self.dtype == DType.float64 and _STAGE_BYTES > 0
+        comptime row_budget = _STAGE_BYTES if staging else 512
+        comptime max_shift = 3 if staging else 5
         var shift = 0
         while (
-            shift < 5
+            shift < max_shift
             and (2 << shift) * self._trees <= 2048
-            and (2 << shift) * self._features * item <= 512
+            and (2 << shift) * self._features * item <= row_budget
             and ceildiv(rows, 2 << shift) >= 8 * self._sms
         ):
             shift += 1
@@ -168,17 +174,26 @@ struct GpuForest[dtype: DType = DType.float32](Movable):
                 and blocks * threads * 2 <= self._sms * 512
             ):
                 threads *= 2
-        var shared = threads * size_of[Scalar[Self.dtype]]()
+        comptime item = size_of[Scalar[Self.dtype]]()
+        var shared = threads * item
+        # Stage float64 row keys when they fit beside the partials without
+        # costing resident blocks; larger rows convert per visit instead.
+        var staged = (
+            Self.dtype == DType.float64
+            and (self._features << shift) * 8 <= _STAGE_BYTES
+        )
+        if staged:
+            shared += (self._features << shift) * 8
         if self._words == 2:
-            self._launch[mode=mode, words=2](
-                x, output, threshold, shift, threads, shared
+            self._dispatch[mode=mode, words=2](
+                x, output, threshold, shift, threads, shared, staged
             )
         else:
-            self._launch[mode=mode, words=4](
-                x, output, threshold, shift, threads, shared
+            self._dispatch[mode=mode, words=4](
+                x, output, threshold, shift, threads, shared, staged
             )
 
-    def _launch[
+    def _dispatch[
         output_dtype: DType, rank: Int, //, mode: Int, words: Int
     ](
         self,
@@ -188,59 +203,69 @@ struct GpuForest[dtype: DType = DType.float32](Movable):
         shift: Int,
         threads: Int,
         shared: Int,
+        staged: Bool,
     ) raises:
+        """Bind construction-time and per-call facts to one kernel instance."""
         comptime if Self.dtype == DType.float64 and words == 2:
             raise Error("Pyre GPU float64 nodes require the wide layout")
         else:
-            var rows = x._shape[0]
-            var nodes = self._nodes.unsafe_ptr().as_imm()
-            var roots = self._roots.unsafe_ptr().as_imm()
-            var input = x._buffer.unsafe_ptr().unsafe_offset(x._offset).as_imm()
-            var result = output._buffer.unsafe_ptr().unsafe_offset(
-                output._offset
-            )
+            comptime may_stage = Self.dtype == DType.float64
             if self._general:
-                comptime kernel = predict_kernel[
-                    Self.dtype, output_dtype, mode, words, True
-                ]
-                self._context.enqueue_function[kernel](
-                    nodes,
-                    roots,
-                    input,
-                    result,
-                    Int32(rows),
-                    Int32(self._trees),
-                    Int32(self._features),
-                    Int32(shift),
-                    self._average,
-                    self._bias,
-                    self._alpha,
-                    threshold,
-                    grid_dim=ceildiv(rows, 1 << shift),
-                    block_dim=threads,
-                    shared_mem_bytes=shared,
+                if may_stage and staged:
+                    self._launch[mode, words, True, may_stage](
+                        x, output, threshold, shift, threads, shared
+                    )
+                else:
+                    self._launch[mode, words, True, False](
+                        x, output, threshold, shift, threads, shared
+                    )
+            elif may_stage and staged:
+                self._launch[mode, words, False, may_stage](
+                    x, output, threshold, shift, threads, shared
                 )
             else:
-                comptime kernel = predict_kernel[
-                    Self.dtype, output_dtype, mode, words, False
-                ]
-                self._context.enqueue_function[kernel](
-                    nodes,
-                    roots,
-                    input,
-                    result,
-                    Int32(rows),
-                    Int32(self._trees),
-                    Int32(self._features),
-                    Int32(shift),
-                    self._average,
-                    self._bias,
-                    self._alpha,
-                    threshold,
-                    grid_dim=ceildiv(rows, 1 << shift),
-                    block_dim=threads,
-                    shared_mem_bytes=shared,
+                self._launch[mode, words, False, False](
+                    x, output, threshold, shift, threads, shared
                 )
+
+    def _launch[
+        output_dtype: DType,
+        rank: Int,
+        //,
+        mode: Int,
+        words: Int,
+        general: Bool,
+        staged: Bool,
+    ](
+        self,
+        x: GpuBatch[Self.dtype],
+        mut output: GpuArray[output_dtype, rank],
+        threshold: Scalar[Self.dtype],
+        shift: Int,
+        threads: Int,
+        shared: Int,
+    ) raises:
+        var rows = x._shape[0]
+        comptime kernel = predict_kernel[
+            Self.dtype, output_dtype, mode, words, general, staged
+        ]
+        self._context.enqueue_function[kernel](
+            self._nodes.unsafe_ptr().as_imm(),
+            self._roots.unsafe_ptr().as_imm(),
+            x._buffer.unsafe_ptr().unsafe_offset(x._offset).as_imm(),
+            output._buffer.unsafe_ptr().unsafe_offset(output._offset),
+            Int32(rows),
+            Int32(self._trees),
+            Int32(self._features),
+            Int32(shift),
+            self._average,
+            self._bias,
+            self._alpha,
+            threshold,
+            grid_dim=ceildiv(rows, 1 << shift),
+            block_dim=threads,
+            shared_mem_bytes=shared,
+        )
 
     def _into[
         output_dtype: DType, rank: Int, mode: Int
