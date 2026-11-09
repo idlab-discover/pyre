@@ -4,7 +4,14 @@ from reference_data import check_references
 from balsa import load, Model, ModelBuilder, TreeBuilder, Operator
 from max.gpu.host import DeviceContext
 from pyre import Forest
-from pyre.gpu import GpuForest, GpuBatch, GpuArray, upload, upload_into
+from pyre.gpu import (
+    GpuForest,
+    GpuBatch,
+    GpuArray,
+    GpuPlan,
+    upload,
+    upload_into,
+)
 from pyre._gpu_storage import _Join, _same_device
 from numojo import NDArray
 from numojo.core.type_aliases import Shape, NDArrayStrides
@@ -406,6 +413,7 @@ def random_rows[
 def check_launch_configurations[
     dtype: DType
 ](trees: Int, features: Int, depth: Int, rows: Int) raises:
+    """Every valid plan shape agrees with CPU, staged and unstaged."""
     var model = random_forest[dtype](trees, features, depth, 7)
     var x = random_rows[dtype](rows, features, 11)
     var expected = Forest(model.copy()).predict_margin(x, num_threads=1)
@@ -414,29 +422,94 @@ def check_launch_configurations[
     var batch = upload(x, ctx)
     var output = GpuArray[dtype, 1](ctx, Shape(rows))
     var tolerance = Scalar[dtype](1e-5 if dtype == DType.float32 else 1e-12)
-    for shift in range(6):
-        for threads in [0, 32, 64, 128, 256, 512]:
-            if threads != 0 and threads < (1 << shift):
-                continue
-            output._buffer.enqueue_fill(-99)
-            with _Join(ctx):
-                forest._enqueue[dtype, 1, 0](batch, output, 0.5, shift, threads)
-            var y = output.to_host()
-            for i in range(rows):
-                var e = expected.item(i)
-                if abs(y.item(i) - e) > tolerance * (1 + abs(e)):
-                    raise Error(
-                        String(
-                            t"shift={shift} threads={threads} row={i}"
-                            t" got={y.item(i)} expected={e}"
-                        )
+    var checked = 0
+    for shift in range(0, 9, 2):
+        for threads in [32, 128, 1024]:
+            for chains in [(1, 1), (2, 1), (4, 1), (1, 2), (1, 4), (2, 2)]:
+                for staged in [False, True]:
+                    var plan = GpuPlan(
+                        shift, threads, chains[0], chains[1], staged
                     )
+                    if not forest._valid(plan) or not forest._fits(plan):
+                        continue
+                    output._buffer.enqueue_fill(-99)
+                    with _Join(ctx):
+                        forest._enqueue[dtype, 1, 0](batch, output, 0.5, plan)
+                    var y = output.to_host()
+                    for i in range(rows):
+                        var e = expected.item(i)
+                        if abs(y.item(i) - e) > tolerance * (1 + abs(e)):
+                            raise Error(
+                                String(
+                                    t"plan={plan} row={i}"
+                                    t" got={y.item(i)} expected={e}"
+                                )
+                            )
+                    checked += 1
+    assert_true(checked > 100)
 
 
 def test_launch_configurations() raises:
     check_launch_configurations[DType.float32](37, 5, 7, 70)
     check_launch_configurations[DType.float64](37, 5, 7, 70)
     check_launch_configurations[DType.float32](300, 3, 4, 3)
+
+
+def test_plans_and_tuning() raises:
+    var model = random_forest[DType.float32](40, 6, 6, 3)
+    var x = random_rows[DType.float32](3000, 6, 5)
+    var expected = Forest(model.copy()).predict_margin(x, num_threads=1)
+    var ctx = DeviceContext()
+    var forest = GpuForest.prepare(model, ctx)
+    var batch = upload(x, ctx)
+    var default = forest.plan(3000)
+    assert_true(forest._valid(default) and forest._fits(default))
+    for rows in [1, 7, 33, 4096, 1 << 20, Int(Int32.MAX)]:
+        var p = forest.plan(rows)
+        assert_true(forest._valid(p) and forest._fits(p))
+    var tuned = forest.tune(batch)
+    assert_true(forest.plan(3000) == tuned)
+    # The 4096 bucket covers 2049..4096 rows; larger batches reuse it.
+    assert_true(forest.plan(2049) == tuned)
+    assert_true(forest.plan(1 << 20) == tuned)
+    assert_true(forest.plan(2048) == forest._default_plan(2048))
+    var y = forest.predict_margin(batch).to_host()
+    for i in range(3000):
+        var e = expected.item(i)
+        assert_true(abs(y.item(i) - e) <= Float32(1e-5) * (1 + abs(e)))
+    var pinned = GpuPlan(0, 32, 1, 1, False)
+    forest.use_plan(3000, pinned)
+    assert_true(forest.plan(3000) == pinned)
+    with assert_raises():
+        forest.use_plan(1, GpuPlan(9, 32, 1, 1, False))
+    with assert_raises():
+        forest.use_plan(1, GpuPlan(5, 32, 3, 1, False))
+    with assert_raises():
+        forest.use_plan(1, GpuPlan(5, 16, 1, 1, False))
+    with assert_raises():
+        # Threads must be a power of two.
+        forest.use_plan(1, GpuPlan(5, 48, 1, 1, False))
+    with assert_raises():
+        _ = forest.tune(upload(NDArray[DType.float32](Shape(0, 6)), ctx))
+
+
+def test_wide_staging_opt_in() raises:
+    # A staged block of 128 rows x 400 float32 features needs > 48 KiB of
+    # shared memory; the plan opts in where the device allows it.
+    var model = random_forest[DType.float32](8, 400, 5, 9)
+    var x = random_rows[DType.float32](300, 400, 13)
+    var expected = Forest(model.copy()).predict_margin(x, num_threads=1)
+    var ctx = DeviceContext()
+    var forest = GpuForest.prepare(model, ctx)
+    var plan = GpuPlan(7, 128, 1, 1, True)
+    if not forest._fits(plan):
+        return
+    assert_true(forest._shared(plan) > forest._device.shared_per_block)
+    forest.use_plan(300, plan)
+    var y = forest.predict_margin(upload(x, ctx)).to_host()
+    for i in range(300):
+        var e = expected.item(i)
+        assert_true(abs(y.item(i) - e) <= Float32(1e-5) * (1 + abs(e)))
 
 
 def test_wide_float32_nodes() raises:

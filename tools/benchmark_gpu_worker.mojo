@@ -220,9 +220,10 @@ def run[
         while True:
             if measured == "device":
                 forest._check(batch, result)
+                var plan = forest.plan(rows)
 
-                def launch() raises {forest, batch, mut result}:
-                    forest._enqueue[dtype, 1, 0](batch, result)
+                def launch() raises {forest, batch, mut result, plan}:
+                    forest._enqueue[dtype, 1, 0](batch, result, 0.5, plan)
 
                 var elapsed: Int
                 with _Join(ctx):

@@ -1,8 +1,15 @@
 """Native, synchronous GPU tree inference with explicit device storage."""
 from balsa import Model, TaskType
-from max.gpu.host import DeviceContext, DeviceBuffer, DeviceAttribute
-from std.math import ceildiv
+from max.gpu.host import (
+    DeviceContext,
+    DeviceBuffer,
+    DeviceAttribute,
+    FuncAttribute,
+)
+from std.bit import next_power_of_two
+from std.math import ceildiv, inf
 from std.sys import size_of
+from std.time import perf_counter_ns
 from numojo.core.type_aliases import Shape
 from ._validation import validate_inference
 from ._gpu_storage import (
@@ -14,17 +21,99 @@ from ._gpu_storage import (
     _same_device,
 )
 from ._gpu_kernel import predict_kernel
-from ._layout import OP_LT, node_count, node_words, pack
+from ._layout import OP_LT, node_count, node_words, pack, path_length
 
 
 # A batch is a rank-two GPU array; results use the same checked storage type.
 comptime GpuBatch[dtype: DType] = GpuArray[dtype, 2]
-# Shared-memory budget for a block's staged float64 input keys.
-comptime _STAGE_BYTES = 8192
+# (rows, trees) chains per thread compiled into every kernel variant.
+comptime _SHAPES = [(1, 1), (2, 1), (4, 1), (1, 2), (1, 4), (2, 2)]
+# Largest rows per block, as a shift.
+comptime _MAX_SHIFT = 8
+comptime _MAX_THREADS = 1024
+
+
+@fieldwise_init
+struct GpuPlan(Equatable, ImplicitlyCopyable, Writable):
+    """How one prediction maps onto the GPU.
+
+    A block owns `1 << chunk_shift` consecutive rows and `threads` threads.
+    Each thread walks `rows_per_thread` rows on `trees_per_thread` trees at a
+    time as independent chains. `staged` copies the block's rows into shared
+    memory, transposed, before traversal. Every valid plan computes the same
+    values; tree summation order, and so the last bits, depend on the plan.
+    """
+
+    var chunk_shift: Int
+    var threads: Int
+    var rows_per_thread: Int
+    var trees_per_thread: Int
+    var staged: Bool
+
+
+@fieldwise_init
+struct _Device(ImplicitlyCopyable):
+    """Launch limits discovered from the device at preparation."""
+
+    var sms: Int
+    var warp: Int
+    var threads_per_sm: Int
+    var shared_per_block: Int
+    var shared_optin: Int
+    var shared_per_sm: Int
+    var blocks_per_sm: Int
+
+    @staticmethod
+    def query(ctx: DeviceContext) raises -> Self:
+        var shared = Int(
+            ctx.get_attribute(DeviceAttribute.MAX_SHARED_MEMORY_PER_BLOCK)
+        )
+        return Self(
+            Int(ctx.get_attribute(DeviceAttribute.MULTIPROCESSOR_COUNT)),
+            Int(ctx.get_attribute(DeviceAttribute.WARP_SIZE)),
+            Int(
+                ctx.get_attribute(
+                    DeviceAttribute.MAX_THREADS_PER_MULTIPROCESSOR
+                )
+            ),
+            shared,
+            max(
+                shared,
+                Int(
+                    ctx.get_attribute(
+                        DeviceAttribute.MAX_SHARED_MEMORY_PER_BLOCK_OPTIN
+                    )
+                ),
+            ),
+            Int(
+                ctx.get_attribute(
+                    DeviceAttribute.MAX_SHARED_MEMORY_PER_MULTIPROCESSOR
+                )
+            ),
+            Int(
+                ctx.get_attribute(DeviceAttribute.MAX_BLOCKS_PER_MULTIPROCESSOR)
+            ),
+        )
+
+
+@fieldwise_init
+struct _Tuned(ImplicitlyCopyable):
+    var bucket: Int
+    var plan: GpuPlan
+
+
+def _bucket(rows: Int) -> Int:
+    """Tuned plans apply to every row count with the same power-of-two ceiling.
+    """
+    return next_power_of_two(max(rows, 1))
 
 
 struct GpuForest[dtype: DType = DType.float32](Movable):
-    """Immutable prepared forest. Calls on the same context must not overlap."""
+    """Prepared forest. Calls on the same context must not overlap.
+
+    Prediction is immutable. `tune` and `use_plan` change only the launch
+    plans of later calls.
+    """
 
     var _context: DeviceContext
     var _nodes: DeviceBuffer[DType.uint32]
@@ -38,7 +127,9 @@ struct GpuForest[dtype: DType = DType.float32](Movable):
     var _average: Int32
     var _bias: Float64
     var _alpha: Float32
-    var _sms: Int
+    var _device: _Device
+    var _depth: Float64
+    var _tuned: List[_Tuned]
 
     def __init__(out self, model: Model[Self.dtype], ctx: DeviceContext) raises:
         _gpu(ctx)
@@ -57,6 +148,7 @@ struct GpuForest[dtype: DType = DType.float32](Movable):
         with _Join(ctx):
             ctx.enqueue_copy(nd, nh)
             ctx.enqueue_copy(rd, rh)
+        var trees = len(model.trees)
         self._context = ctx.copy()
         self._nodes = nd^
         self._roots = rd^
@@ -64,12 +156,14 @@ struct GpuForest[dtype: DType = DType.float32](Movable):
         self._words = words
         self._general = general
         self._features = features
-        self._trees = len(model.trees)
+        self._trees = trees
         self._classifier = model.task_type == TaskType.BINARY_CLF
         self._average = Int32(model.average_tree_output != 0)
         self._bias = model.base_scores[0]
         self._alpha = model.sigmoid_alpha
-        self._sms = Int(ctx.get_attribute(DeviceAttribute.MULTIPROCESSOR_COUNT))
+        self._device = _Device.query(ctx)
+        self._depth = path_length(model) / Float64(max(trees, 1))
+        self._tuned = List[_Tuned]()
 
     def __deinit__(deinit self):
         _ = self._nodes^
@@ -90,6 +184,318 @@ struct GpuForest[dtype: DType = DType.float32](Movable):
 
     def is_classifier(self) -> Bool:
         return self._classifier
+
+    # ----------------------------------------------------------------------
+    # Launch plans
+
+    def plan(self, rows: Int) -> GpuPlan:
+        """The plan a call with `rows` rows uses: a tuned or pinned plan for
+        its power-of-two bucket, the largest tuned plan for bigger batches,
+        otherwise the device-derived default."""
+        var bucket = _bucket(rows)
+        var top = -1
+        for i in range(len(self._tuned)):
+            ref entry = self._tuned[i]
+            if entry.bucket == bucket:
+                return entry.plan
+            if top < 0 or entry.bucket > self._tuned[top].bucket:
+                top = i
+        if top >= 0 and bucket > self._tuned[top].bucket:
+            return self._tuned[top].plan
+        return self._default_plan(rows)
+
+    def use_plan(mut self, rows: Int, plan: GpuPlan) raises:
+        """Pin `plan` for row counts in the power-of-two bucket of `rows`.
+
+        Raises if the plan is malformed or exceeds this device's limits.
+        Pinned plans make repeated runs choose identical launches.
+        """
+        self._check_plan(plan)
+        if not self._fits(plan):
+            raise Error("Pyre GPU plan exceeds this device's resources")
+        self._store(_bucket(rows), plan)
+
+    def tune(mut self, x: GpuBatch[Self.dtype]) raises -> GpuPlan:
+        """Measure candidate plans on `x` and keep the fastest for its bucket.
+
+        Candidates are generated from the device's limits and the forest's
+        shape, then searched one dimension at a time from the default plan.
+        Batches beyond a few full waves of the device are measured on a
+        prefix, since per-row cost no longer changes there. Inputs are only
+        read. Returns the stored plan.
+        """
+        self._check_input(x)
+        _same_device(self._context, x._buffer.context())
+        var rows = x._shape[0]
+        if rows == 0:
+            raise Error("Pyre GPU tuning requires at least one row")
+        var sample = min(rows, self._tune_rows())
+        var scratch = self._context.enqueue_create_buffer[Self.dtype](sample)
+        var input = (
+            x._buffer.unsafe_ptr()
+            .unsafe_offset(x._offset)
+            .unsafe_origin_cast[MutAnyOrigin]()
+            .as_imm()
+        )
+        var output = scratch.unsafe_ptr().unsafe_origin_cast[MutAnyOrigin]()
+        var best = self._default_plan(rows)
+        var best_time = self._time(
+            best, input, sample, output, inf[DType.float64]()
+        )
+        for _ in range(2):
+            var before = best
+            # Rows per block x threads x staging, then chains per thread.
+            var seed = best
+            for shift in range(_MAX_SHIFT + 1):
+                if (1 << shift) > 2 * next_power_of_two(sample):
+                    break
+                var threads = self._device.warp
+                while threads <= _MAX_THREADS:
+                    for staged in [False, True]:
+                        var p = seed
+                        p.chunk_shift = shift
+                        p.threads = threads
+                        p.staged = staged
+                        self._consider(
+                            p, input, sample, output, best, best_time
+                        )
+                    threads *= 2
+            comptime for i in range(len(_SHAPES)):
+                comptime r = _SHAPES[i][0]
+                comptime q = _SHAPES[i][1]
+                var p = best
+                p.rows_per_thread = r
+                p.trees_per_thread = q
+                p = self._repair(p)
+                self._consider(p, input, sample, output, best, best_time)
+            if best == before:
+                break
+        self._context.synchronize()
+        _ = scratch^
+        self._store(_bucket(rows), best)
+        return best
+
+    def _store(mut self, bucket: Int, plan: GpuPlan):
+        for i in range(len(self._tuned)):
+            if self._tuned[i].bucket == bucket:
+                self._tuned[i].plan = plan
+                return
+        self._tuned.append(_Tuned(bucket, plan))
+
+    def _resident(self, threads: Int) -> Int:
+        """Blocks of `threads` threads an SM holds by thread and block limits.
+        """
+        var t = max(self._device.warp, min(_MAX_THREADS, threads))
+        return max(
+            1, min(self._device.blocks_per_sm, self._device.threads_per_sm // t)
+        )
+
+    def _tune_rows(self) -> Int:
+        """Rows that fill every SM with several waves of the largest blocks;
+        per-row cost no longer changes beyond this."""
+        return max(4096, self._device.sms * 4096)
+
+    def _consider(
+        self,
+        plan: GpuPlan,
+        input: ImmPointer[Scalar[Self.dtype], ImmutAnyOrigin],
+        rows: Int,
+        output: MutPointer[Scalar[Self.dtype], MutAnyOrigin],
+        mut best: GpuPlan,
+        mut best_time: Float64,
+    ):
+        if plan == best or not self._valid(plan) or not self._fits(plan):
+            return
+        var t = self._time(plan, input, rows, output, best_time)
+        # Switch only on a clear gain, so timing noise cannot walk the plan.
+        if t < 0.98 * best_time:
+            best = plan
+            best_time = t
+
+    def _time(
+        self,
+        plan: GpuPlan,
+        input: ImmPointer[Scalar[Self.dtype], ImmutAnyOrigin],
+        rows: Int,
+        output: MutPointer[Scalar[Self.dtype], MutAnyOrigin],
+        bound: Float64,
+    ) -> Float64:
+        """Best completed-call seconds; abandons plans far behind `bound`.
+        Plans the device rejects at launch measure as infinitely slow."""
+        try:
+            # The first launch also loads the kernel variant.
+            self._run[Self.dtype, 0](
+                input, rows, output, Scalar[Self.dtype](0.5), plan
+            )
+            self._context.synchronize()
+            var best = inf[DType.float64]()
+            var spent = 0
+            var repeats = 0
+            while repeats < 3 or (spent < 2_000_000 and repeats < 50):
+                var start = perf_counter_ns()
+                self._run[Self.dtype, 0](
+                    input,
+                    rows,
+                    output,
+                    Scalar[Self.dtype](0.5),
+                    plan,
+                )
+                self._context.synchronize()
+                var elapsed = perf_counter_ns() - start
+                spent += Int(elapsed)
+                best = min(best, Float64(elapsed) * 1e-9)
+                repeats += 1
+                if best > 1.5 * bound:
+                    break
+            return best
+        except:
+            return inf[DType.float64]()
+
+    def _valid(self, plan: GpuPlan) -> Bool:
+        var chunk = 1 << plan.chunk_shift
+        var known = False
+        comptime for i in range(len(_SHAPES)):
+            comptime r = _SHAPES[i][0]
+            comptime q = _SHAPES[i][1]
+            if plan.rows_per_thread == r and plan.trees_per_thread == q:
+                known = True
+        return (
+            known
+            and plan.chunk_shift >= 0
+            and plan.chunk_shift <= _MAX_SHIFT
+            and plan.threads >= self._device.warp
+            and plan.threads <= _MAX_THREADS
+            and plan.threads % self._device.warp == 0
+            and next_power_of_two(plan.threads) == plan.threads
+            and chunk >= plan.rows_per_thread
+            and chunk // plan.rows_per_thread <= plan.threads
+        )
+
+    def _check_plan(self, plan: GpuPlan) raises:
+        if not self._valid(plan):
+            raise Error(
+                String(
+                    t"Pyre GPU plan is invalid: {plan}. Rows per block must"
+                    t" be 1 << 0..{_MAX_SHIFT}; threads a power of two from"
+                    t" the warp size to {_MAX_THREADS} covering rows per"
+                    t" block / rows per thread; (rows, trees) per thread one of"
+                    t" (1, 1), (2, 1), (4, 1), (1, 2), (1, 4), (2, 2)"
+                )
+            )
+
+    def _shared(self, plan: GpuPlan) -> Int:
+        comptime item = size_of[Scalar[Self.dtype]]()
+        var bytes = plan.threads * plan.rows_per_thread * item
+        if plan.staged:
+            # Float64 rows stage as Int64 keys: the same width.
+            bytes += self._features * ((1 << plan.chunk_shift) + 1) * item
+        return bytes
+
+    def _fits(self, plan: GpuPlan) -> Bool:
+        return self._shared(plan) <= self._device.shared_optin
+
+    def _repair(self, plan: GpuPlan) -> GpuPlan:
+        """Raise threads until they cover the block's row lanes."""
+        var p = plan
+        var lanes = (1 << p.chunk_shift) // max(p.rows_per_thread, 1)
+        while p.threads < lanes and p.threads < _MAX_THREADS:
+            p.threads *= 2
+        return p
+
+    def _default_plan(self, rows: Int) -> GpuPlan:
+        """Device-derived plan without measurement; `tune` refines it.
+
+        Rows are staged when the forest reads them often: float64 rows
+        (staging converts each value to a key once) or rows visiting at least
+        16 nodes per feature. Staged blocks own 32 to 64 rows (keeping two
+        blocks per SM) and add threads while the trees in flight per block
+        stay within one SM's shared memory, a proxy for its L1; grids too
+        small to occupy every SM widen blocks to all their trees. Unstaged
+        blocks cover every tree in one pass: four trees per thread, about four
+        warps per block, and as many rows as keep the rows resident on an SM
+        within a quarter of its shared memory; an underfilled GPU walks one
+        tree per thread instead. Blocks are never so small that
+        the per-SM block limit, rather than threads, caps occupancy.
+        """
+        var d = self._device
+        # Smaller blocks would hit the per-SM block limit before its threads.
+        var floor = max(
+            d.warp,
+            next_power_of_two(ceildiv(d.threads_per_sm, d.blocks_per_sm)),
+        )
+        var trees = max(self._trees, 1)
+        var tree_bytes = self._count * self._words * 4 // trees
+        var visits = Float64(trees) * self._depth
+        var plan = GpuPlan(0, d.warp, 1, 1, False)
+        plan.trees_per_thread = 4 if trees >= 16 else (2 if trees >= 2 else 1)
+        if Self.dtype == DType.float64 or visits >= Float64(
+            16 * self._features
+        ):
+            var staged = plan
+            staged.staged = True
+            staged.chunk_shift = 6
+            while (
+                staged.chunk_shift > 5
+                and ceildiv(rows, 1 << staged.chunk_shift) < 2 * d.sms
+            ):
+                staged.chunk_shift -= 1
+            var few = ceildiv(rows, 1 << staged.chunk_shift) < 2 * d.sms
+            if trees >= 256 and staged.chunk_shift >= 1:
+                staged.rows_per_thread = 2
+                staged.trees_per_thread = 2
+            var lanes = (1 << staged.chunk_shift) // staged.rows_per_thread
+            staged.threads = max(floor, lanes)
+            # Few blocks cannot occupy every SM: widen each to all its trees.
+            while (
+                staged.threads < (_MAX_THREADS if few else 512)
+                and (
+                    few
+                    or (2 * staged.threads // lanes)
+                    * staged.trees_per_thread
+                    * tree_bytes
+                    <= d.shared_per_sm
+                )
+                and (staged.threads // lanes) * staged.trees_per_thread < trees
+            ):
+                staged.threads *= 2
+            staged = self._repair(staged)
+            # Too few blocks to reach half the SMs: per-row latency matters
+            # more than shared row reads.
+            if 2 * ceildiv(
+                rows, 1 << staged.chunk_shift
+            ) >= d.sms and self._shared(staged) <= min(
+                d.shared_per_block, d.shared_per_sm // 4
+            ):
+                return staged
+        var groves = next_power_of_two(ceildiv(trees, plan.trees_per_thread))
+        var chunk = max(1, 4 * d.warp // groves)
+        # Rows resident per SM stay within a quarter of its shared memory.
+        var row_bytes = self._features * size_of[Scalar[Self.dtype]]()
+        while chunk > 1 and (
+            ceildiv(rows, chunk) < 2 * d.sms
+            or chunk * row_bytes * self._resident(chunk * groves)
+            > d.shared_per_sm // 4
+        ):
+            chunk //= 2
+        while (1 << plan.chunk_shift) < chunk:
+            plan.chunk_shift += 1
+        if ceildiv(rows, chunk) < 2 * d.sms:
+            # An underfilled GPU is latency-bound: one chain per thread
+            # gives the shortest walk per block.
+            plan.trees_per_thread = 1
+            groves = next_power_of_two(trees)
+        plan.threads = max(floor, min(_MAX_THREADS, chunk * groves))
+        # Keep the whole grid within half the device's thread slots.
+        var blocks = ceildiv(rows, chunk)
+        while (
+            plan.threads > floor
+            and blocks * plan.threads > d.sms * d.threads_per_sm // 2
+        ):
+            plan.threads //= 2
+        return self._repair(plan)
+
+    # ----------------------------------------------------------------------
+    # Launch
 
     def _check_input(self, x: GpuBatch[Self.dtype]) raises:
         # Kernel row counts are signed 32-bit. Check before output allocation
@@ -126,111 +532,82 @@ struct GpuForest[dtype: DType = DType.float32](Movable):
             if xb < ye and yb < xe:
                 raise Error("Pyre GPU input and output must not overlap")
 
-    def _chunk_shift(self, rows: Int) -> Int:
-        """Rows per block as a power of two, fitted on an RTX 5090 sweep.
-
-        Grow while the block's rows stay within 512 bytes (node data then
-        dominates L1), tasks stay moderate, and the grid keeps at least eight
-        blocks per multiprocessor. Staged float64 rows live in shared memory
-        instead of L1; up to eight rows per block measured best for them.
-        """
-        comptime item = size_of[Scalar[Self.dtype]]()
-        comptime staging = Self.dtype == DType.float64 and _STAGE_BYTES > 0
-        comptime row_budget = _STAGE_BYTES if staging else 512
-        comptime max_shift = 3 if staging else 5
-        var shift = 0
-        while (
-            shift < max_shift
-            and (2 << shift) * self._trees <= 2048
-            and (2 << shift) * self._features * item <= row_budget
-            and ceildiv(rows, 2 << shift) >= 8 * self._sms
-        ):
-            shift += 1
-        return shift
-
     def _enqueue[
         output_dtype: DType, rank: Int, mode: Int
     ](
         self,
         x: GpuBatch[Self.dtype],
         mut output: GpuArray[output_dtype, rank],
-        threshold: Scalar[Self.dtype] = 0.5,
-        chunk_shift: Int = -1,
-        block_threads: Int = 0,
+        threshold: Scalar[Self.dtype],
+        plan: GpuPlan,
     ) raises:
-        var rows = x._shape[0]
-        if rows == 0:
-            return
-        var shift = chunk_shift if chunk_shift >= 0 else self._chunk_shift(rows)
-        var threads = block_threads
-        if threads == 0:
-            var tasks = self._trees << shift
-            threads = max(32, min(128, ceildiv(tasks, 32) * 32))
-            # Few blocks leave the GPU idle: widen them over more trees.
-            var blocks = ceildiv(rows, 1 << shift)
-            while (
-                threads < 1024
-                and threads < tasks
-                and blocks * threads * 2 <= self._sms * 512
-            ):
-                threads *= 2
-        comptime item = size_of[Scalar[Self.dtype]]()
-        var shared = threads * item
-        # Stage float64 row keys when they fit beside the partials without
-        # costing resident blocks; larger rows convert per visit instead.
-        var staged = (
-            Self.dtype == DType.float64
-            and (self._features << shift) * 8 <= _STAGE_BYTES
+        self._run[output_dtype, mode](
+            x._buffer.unsafe_ptr()
+            .unsafe_offset(x._offset)
+            .unsafe_origin_cast[MutAnyOrigin]()
+            .as_imm(),
+            x._shape[0],
+            output._buffer.unsafe_ptr()
+            .unsafe_offset(output._offset)
+            .unsafe_origin_cast[MutAnyOrigin](),
+            threshold,
+            plan,
         )
-        if staged:
-            shared += (self._features << shift) * 8
-        if self._words == 2:
-            self._dispatch[mode=mode, words=2](
-                x, output, threshold, shift, threads, shared, staged
-            )
-        else:
-            self._dispatch[mode=mode, words=4](
-                x, output, threshold, shift, threads, shared, staged
-            )
 
-    def _dispatch[
-        output_dtype: DType, rank: Int, //, mode: Int, words: Int
+    def _run[
+        output_dtype: DType, mode: Int
     ](
         self,
-        x: GpuBatch[Self.dtype],
-        mut output: GpuArray[output_dtype, rank],
+        x: ImmPointer[Scalar[Self.dtype], ImmutAnyOrigin],
+        rows: Int,
+        y: MutPointer[Scalar[output_dtype], MutAnyOrigin],
         threshold: Scalar[Self.dtype],
-        shift: Int,
-        threads: Int,
-        shared: Int,
-        staged: Bool,
+        plan: GpuPlan,
     ) raises:
-        """Bind construction-time and per-call facts to one kernel instance."""
+        """Enqueue one validated plan; binds per-forest facts to a kernel."""
+        if rows == 0:
+            return
+        self._check_plan(plan)
+        if not self._fits(plan):
+            raise Error("Pyre GPU plan exceeds this device's shared memory")
+        if self._words == 2:
+            self._dispatch[mode=mode, words=2](x, rows, y, threshold, plan)
+        else:
+            self._dispatch[mode=mode, words=4](x, rows, y, threshold, plan)
+
+    def _dispatch[
+        output_dtype: DType, //, mode: Int, words: Int
+    ](
+        self,
+        x: ImmPointer[Scalar[Self.dtype], ImmutAnyOrigin],
+        rows: Int,
+        y: MutPointer[Scalar[output_dtype], MutAnyOrigin],
+        threshold: Scalar[Self.dtype],
+        plan: GpuPlan,
+    ) raises:
         comptime if Self.dtype == DType.float64 and words == 2:
             raise Error("Pyre GPU float64 nodes require the wide layout")
         else:
-            comptime may_stage = Self.dtype == DType.float64
             if self._general:
-                if may_stage and staged:
-                    self._launch[mode, words, True, may_stage](
-                        x, output, threshold, shift, threads, shared
+                if plan.staged:
+                    self._chains[mode, words, True, True](
+                        x, rows, y, threshold, plan
                     )
                 else:
-                    self._launch[mode, words, True, False](
-                        x, output, threshold, shift, threads, shared
+                    self._chains[mode, words, True, False](
+                        x, rows, y, threshold, plan
                     )
-            elif may_stage and staged:
-                self._launch[mode, words, False, may_stage](
-                    x, output, threshold, shift, threads, shared
+            elif plan.staged:
+                self._chains[mode, words, False, True](
+                    x, rows, y, threshold, plan
                 )
             else:
-                self._launch[mode, words, False, False](
-                    x, output, threshold, shift, threads, shared
+                self._chains[mode, words, False, False](
+                    x, rows, y, threshold, plan
                 )
 
-    def _launch[
+    def _chains[
         output_dtype: DType,
-        rank: Int,
         //,
         mode: Int,
         words: Int,
@@ -238,34 +615,90 @@ struct GpuForest[dtype: DType = DType.float32](Movable):
         staged: Bool,
     ](
         self,
-        x: GpuBatch[Self.dtype],
-        mut output: GpuArray[output_dtype, rank],
+        x: ImmPointer[Scalar[Self.dtype], ImmutAnyOrigin],
+        rows: Int,
+        y: MutPointer[Scalar[output_dtype], MutAnyOrigin],
         threshold: Scalar[Self.dtype],
-        shift: Int,
-        threads: Int,
-        shared: Int,
+        plan: GpuPlan,
     ) raises:
-        var rows = x._shape[0]
+        comptime for i in range(len(_SHAPES)):
+            comptime r = _SHAPES[i][0]
+            comptime q = _SHAPES[i][1]
+            if plan.rows_per_thread == r and plan.trees_per_thread == q:
+                self._launch[mode, words, general, staged, r, q](
+                    x, rows, y, threshold, plan
+                )
+                return
+
+    def _launch[
+        output_dtype: DType,
+        //,
+        mode: Int,
+        words: Int,
+        general: Bool,
+        staged: Bool,
+        rows_per_thread: Int,
+        trees_per_thread: Int,
+    ](
+        self,
+        x: ImmPointer[Scalar[Self.dtype], ImmutAnyOrigin],
+        rows: Int,
+        y: MutPointer[Scalar[output_dtype], MutAnyOrigin],
+        threshold: Scalar[Self.dtype],
+        plan: GpuPlan,
+    ) raises:
         comptime kernel = predict_kernel[
-            Self.dtype, output_dtype, mode, words, general, staged
+            Self.dtype,
+            output_dtype,
+            mode,
+            words,
+            general,
+            staged,
+            rows_per_thread,
+            trees_per_thread,
         ]
-        self._context.enqueue_function[kernel](
-            self._nodes.unsafe_ptr().as_imm(),
-            self._roots.unsafe_ptr().as_imm(),
-            x._buffer.unsafe_ptr().unsafe_offset(x._offset).as_imm(),
-            output._buffer.unsafe_ptr().unsafe_offset(output._offset),
-            Int32(rows),
-            Int32(self._trees),
-            Int32(self._features),
-            Int32(shift),
-            self._average,
-            self._bias,
-            self._alpha,
-            threshold,
-            grid_dim=ceildiv(rows, 1 << shift),
-            block_dim=threads,
-            shared_mem_bytes=shared,
-        )
+        var shared = self._shared(plan)
+        var grid = ceildiv(rows, 1 << plan.chunk_shift)
+        if shared <= self._device.shared_per_block:
+            self._context.enqueue_function[kernel](
+                self._nodes.unsafe_ptr().as_imm(),
+                self._roots.unsafe_ptr().as_imm(),
+                x,
+                y,
+                Int32(rows),
+                Int32(self._trees),
+                Int32(self._features),
+                Int32(plan.chunk_shift),
+                self._average,
+                self._bias,
+                self._alpha,
+                threshold,
+                grid_dim=grid,
+                block_dim=plan.threads,
+                shared_mem_bytes=shared,
+            )
+        else:
+            # Beyond the default per-block limit: opt in, up to the device's.
+            self._context.enqueue_function[kernel](
+                self._nodes.unsafe_ptr().as_imm(),
+                self._roots.unsafe_ptr().as_imm(),
+                x,
+                y,
+                Int32(rows),
+                Int32(self._trees),
+                Int32(self._features),
+                Int32(plan.chunk_shift),
+                self._average,
+                self._bias,
+                self._alpha,
+                threshold,
+                grid_dim=grid,
+                block_dim=plan.threads,
+                shared_mem_bytes=shared,
+                func_attribute=FuncAttribute.MAX_DYNAMIC_SHARED_SIZE_BYTES(
+                    UInt32(shared)
+                ),
+            )
 
     def _into[
         output_dtype: DType, rank: Int, mode: Int
@@ -276,8 +709,12 @@ struct GpuForest[dtype: DType = DType.float32](Movable):
         threshold: Scalar[Self.dtype] = 0.5,
     ) raises:
         self._check(x, output)
+        var plan = self.plan(x._shape[0])
         with _Join(self._context):
-            self._enqueue[output_dtype, rank, mode](x, output, threshold)
+            self._enqueue[output_dtype, rank, mode](x, output, threshold, plan)
+
+    # ----------------------------------------------------------------------
+    # Prediction
 
     def predict_margin_into(
         self, x: GpuBatch[Self.dtype], mut output: GpuArray[Self.dtype, 1]

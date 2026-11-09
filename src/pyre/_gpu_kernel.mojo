@@ -18,6 +18,7 @@ from max.gpu.memory import external_memory, AddressSpace
 from std.gpu.primitives import warp
 from std.math import isnan, exp
 from std.memory import bitcast
+from std.bit import log2_floor
 
 from ._layout import (
     OP_LT,
@@ -46,9 +47,9 @@ def warp_sum[dtype: DType](value: Scalar[dtype]) -> Scalar[dtype]:
     comptime if dtype == DType.float64:
         # Float64 shuffles are unavailable; exchange the two 32-bit halves.
         var total = value
-        comptime for i in range(5):
+        comptime for i in range(log2_floor(WARP_SIZE)):
             var halves = bitcast[DType.uint32, 2](total)
-            var offset = UInt32(16 >> i)
+            var offset = UInt32((WARP_SIZE // 2) >> i)
             var other = SIMD[DType.uint32, 2](
                 warp.shuffle_xor(halves[0], offset),
                 warp.shuffle_xor(halves[1], offset),
@@ -73,84 +74,139 @@ def input_key(value: Float64) -> Int64:
     return -magnitude if bits < 0 else magnitude
 
 
+def stage_type[dtype: DType]() -> DType:
+    """Staged element type: float64 inputs are staged as comparison keys."""
+    return DType.int64 if dtype == DType.float64 else dtype
+
+
 @always_inline
-def evaluate_tree[
+def split[
     dtype: DType, words: Int, general: Bool, staged: Bool
 ](
-    nodes: ImmPointer[UInt32, ImmutAnyOrigin],
-    root: Int32,
+    node: SIMD[DType.uint32, words],
     row: ImmPointer[Scalar[dtype], ImmutAnyOrigin],
-    keys: Pointer[Int64, _, address_space=AddressSpace.SHARED],
-) -> Scalar[dtype]:
-    """Walk one tree for one row. Staged float64 rows read precomputed keys.
+    stage: Pointer[
+        Scalar[stage_type[dtype]()], _, address_space=AddressSpace.SHARED
+    ],
+    stride: Int,
+) -> UInt32:
+    """Index step from `node` for one row: 0 at a leaf, else 1 or the offset.
 
-    Node indices stay 32-bit: the forest is limited to Int32 node indexing.
+    Unstaged rows read `row[feature]` from global memory; staged rows read
+    `stage[feature * stride]`, a transposed copy (float64 as keys).
     """
     comptime compact = words == 2
-    var index = UInt32(root)
-    var node = nodes.unsafe_load[width=words, alignment=4 * words](
-        Int(index * UInt32(words))
-    )
-    while True:
-        var meta: UInt32
-        var offset: UInt32
-        var feature: UInt32
-        comptime if compact:
-            meta = node[1]
-            offset = meta & ((1 << COMPACT_OFFSET_BITS) - 1)
-            feature = (meta >> COMPACT_OFFSET_BITS) & (
-                (1 << COMPACT_FEATURE_BITS) - 1
-            )
-        else:
-            meta = node[2]
-            offset = node[3]
-            feature = meta & ((1 << WIDE_FEATURE_BITS) - 1)
-        if offset == 0:
-            break
-        var condition: Bool
-        comptime if dtype == DType.float64:
-            # FP64 compare throughput is low on consumer GPUs; compare
-            # order-preserving integer keys instead (see `float64_key`).
-            var key: Int64
-            comptime if staged:
-                key = keys[unsafe_offset=Int(feature)]
-            else:
-                key = input_key(Float64(row[unsafe_offset=Int(feature)]))
-            var missing = key == Int64.MIN
-            var threshold = bitcast[DType.int64, 1](
-                SIMD[DType.uint32, 2](node[0], node[1])
-            )
-            comptime if general:
-                var op = (meta >> 29) & 3
-                condition = (
-                    (op == OP_LT and key < threshold)
-                    or (op == OP_LE and key <= threshold)
-                    or (op == OP_EQ and key == threshold)
-                )
-            else:
-                condition = key < threshold
-            if missing:
-                condition = (meta & DEFAULT_DISTANT) != 0
-        else:
-            var value = row[unsafe_offset=Int(feature)]
-            var threshold = node_value[dtype, words](node)
-            comptime if general:
-                var op = (meta >> 29) & 3
-                condition = (
-                    (op == OP_LT and value < threshold)
-                    or (op == OP_LE and value <= threshold)
-                    or (op == OP_EQ and value == threshold)
-                )
-            else:
-                condition = value < threshold
-            condition = condition or (
-                (meta & DEFAULT_DISTANT) != 0 and isnan(value)
-            )
-        index += offset if condition else 1
-        node = nodes.unsafe_load[width=words, alignment=4 * words](
-            Int(index * UInt32(words))
+    var meta: UInt32
+    var offset: UInt32
+    var feature: UInt32
+    comptime if compact:
+        meta = node[1]
+        offset = meta & ((1 << COMPACT_OFFSET_BITS) - 1)
+        feature = (meta >> COMPACT_OFFSET_BITS) & (
+            (1 << COMPACT_FEATURE_BITS) - 1
         )
-    return node_value[dtype, words](node)
+    else:
+        meta = node[2]
+        offset = node[3]
+        feature = meta & ((1 << WIDE_FEATURE_BITS) - 1)
+    if offset == 0:
+        return 0
+    var condition: Bool
+    comptime if dtype == DType.float64:
+        # FP64 compare throughput is low on consumer GPUs; compare
+        # order-preserving integer keys instead (see `float64_key`).
+        var key: Int64
+        comptime if staged:
+            key = rebind[Int64](stage[unsafe_offset=Int(feature) * stride])
+        else:
+            key = input_key(Float64(row[unsafe_offset=Int(feature)]))
+        var missing = key == Int64.MIN
+        var threshold = bitcast[DType.int64, 1](
+            SIMD[DType.uint32, 2](node[0], node[1])
+        )
+        comptime if general:
+            var op = (meta >> 29) & 3
+            condition = (
+                (op == OP_LT and key < threshold)
+                or (op == OP_LE and key <= threshold)
+                or (op == OP_EQ and key == threshold)
+            )
+        else:
+            condition = key < threshold
+        if missing:
+            condition = (meta & DEFAULT_DISTANT) != 0
+    else:
+        var value: Scalar[dtype]
+        comptime if staged:
+            value = rebind[Scalar[dtype]](
+                stage[unsafe_offset=Int(feature) * stride]
+            )
+        else:
+            value = row[unsafe_offset=Int(feature)]
+        var threshold = node_value[dtype, words](node)
+        comptime if general:
+            var op = (meta >> 29) & 3
+            condition = (
+                (op == OP_LT and value < threshold)
+                or (op == OP_LE and value <= threshold)
+                or (op == OP_EQ and value == threshold)
+            )
+        else:
+            condition = value < threshold
+        condition = condition or (
+            (meta & DEFAULT_DISTANT) != 0 and isnan(value)
+        )
+    return offset if condition else 1
+
+
+@always_inline
+def evaluate[
+    dtype: DType,
+    words: Int,
+    general: Bool,
+    staged: Bool,
+    rows: Int,
+    trees: Int,
+](
+    nodes: ImmPointer[UInt32, ImmutAnyOrigin],
+    roots: SIMD[DType.uint32, trees],
+    x: ImmPointer[Scalar[dtype], ImmutAnyOrigin],
+    stage: Pointer[
+        Scalar[stage_type[dtype]()], _, address_space=AddressSpace.SHARED
+    ],
+    row_index: SIMD[DType.int32, rows],
+    width: Int,
+    stride: Int,
+) -> SIMD[dtype, rows]:
+    """Walk `rows x trees` independent chains in lockstep; sum leaves per row.
+
+    Interleaved walks keep several node loads in flight per thread. A chain
+    at its leaf steps by zero, reloading its cached leaf, until all arrive.
+    Node indices stay 32-bit: the forest is limited to Int32 node indexing.
+    """
+    comptime chains = rows * trees
+    var index = SIMD[DType.uint32, chains]()
+    comptime for c in range(chains):
+        index[c] = roots[c % trees]
+    while True:
+        var step = SIMD[DType.uint32, chains]()
+        var leaf = SIMD[dtype, rows]()
+        comptime for c in range(chains):
+            comptime r = c // trees
+            var node = nodes.unsafe_load[width=words, alignment=4 * words](
+                Int(index[c] * UInt32(words))
+            )
+            var r_at = Int(row_index[r])
+            step[c] = split[dtype, words, general, staged](
+                node,
+                x.unsafe_offset(r_at * width),
+                stage.unsafe_offset(r_at),
+                stride,
+            )
+            leaf[r] += node_value[dtype, words](node)
+        if step.reduce_or() == 0:
+            return leaf
+        index += step
 
 
 def predict_kernel[
@@ -160,6 +216,8 @@ def predict_kernel[
     words: Int,
     general: Bool,
     staged: Bool,
+    rows_per_thread: Int,
+    trees_per_thread: Int,
 ](
     nodes: ImmPointer[UInt32, ImmutAnyOrigin],
     roots: ImmPointer[Int32, ImmutAnyOrigin],
@@ -174,60 +232,97 @@ def predict_kernel[
     alpha: Float32,
     threshold: Scalar[dtype],
 ):
-    """Dynamic shared memory: one partial per thread, then staged row keys.
+    """Dynamic shared memory: `threads * rows_per_thread` partials, then
+    staged row keys.
 
-    Staging converts each float64 input of the block's rows to a key once,
-    instead of once per visited node; the host enables it for small rows.
+    The block's `chunk` rows split into `lanes = chunk / rows_per_thread`; a
+    thread walks rows `lane + k * lanes` over `trees_per_thread` consecutive
+    trees at a time, striding by groves. Staging converts each float64 input
+    of the block's rows to a key once, instead of once per visited node.
     """
     comptime assert dtype.is_floating_point()
-    comptime assert not staged or dtype == DType.float64
+    comptime R = rows_per_thread
+    comptime Q = trees_per_thread
     var tid = thread_idx.x
     var threads = block_dim.x
-    var shift = Int(chunk_shift)
-    var chunk = 1 << shift
+    var chunk = 1 << Int(chunk_shift)
+    var lanes = chunk // R
     var width = Int(features)
     var first = block_idx.x * chunk
     var active = min(chunk, Int(rows) - first)
     var partial = external_memory[
         Scalar[dtype], address_space=AddressSpace.SHARED, alignment=16
     ]()
-    var keys = partial.unsafe_offset(threads).unsafe_bitcast[Int64]()
+    comptime S = stage_type[dtype]()
+    # Partials end 8-byte aligned: `threads * R` is even past one warp.
+    var stage = partial.unsafe_offset(threads * R).unsafe_bitcast[Scalar[S]]()
+    var block_x = x.unsafe_offset(first * width)
+    # Odd stride: lanes on distinct rows and fill on distinct features both
+    # land on distinct banks.
+    var stride = chunk + 1
     comptime if staged:
-        var base = x.unsafe_offset(first * width)
         for i in range(tid, active * width, threads):
-            keys[unsafe_offset=i] = input_key(Float64(base[unsafe_offset=i]))
+            var r = i // width
+            var f = i - r * width
+            var v = block_x[unsafe_offset=i]
+            comptime if dtype == DType.float64:
+                stage[unsafe_offset=f * stride + r] = rebind[Scalar[S]](
+                    input_key(Float64(v))
+                )
+            else:
+                stage[unsafe_offset=f * stride + r] = rebind[Scalar[S]](v)
         barrier()
-    var r = tid & (chunk - 1)
-    var groves = threads >> shift
-    var total = Scalar[dtype](0)
-    if r < active:
-        var row = x.unsafe_offset((first + r) * width)
-        var row_keys = keys.unsafe_offset(r * width)
-        for tree in range(tid >> shift, Int(trees), groves):
-            total += evaluate_tree[dtype, words, general, staged](
-                nodes, roots[unsafe_offset=tree], row, row_keys
+    var lane = tid % lanes
+    var groves = threads // lanes
+    var grove = tid // lanes
+    # Rows past the batch end repeat the last row; their sums are not stored.
+    var row_index = SIMD[DType.int32, R]()
+    comptime for k in range(R):
+        row_index[k] = Int32(min(lane + k * lanes, active - 1))
+    var total = SIMD[dtype, R]()
+    if lane < active:
+        var count = Int(trees)
+        var tree = grove * Q
+        while tree + Q <= count:
+            var root = SIMD[DType.uint32, Q]()
+            comptime for q in range(Q):
+                root[q] = UInt32(roots[unsafe_offset=tree + q])
+            total += evaluate[dtype, words, general, staged, R, Q](
+                nodes, root, block_x, stage, row_index, width, stride
             )
-    partial[unsafe_offset=tid] = total
+            tree += groves * Q
+        comptime if Q > 1:
+            # Fewer than Q trees remain for this grove: walk them singly.
+            while tree < count:
+                var root = SIMD[DType.uint32, 1](
+                    UInt32(roots[unsafe_offset=tree])
+                )
+                total += evaluate[dtype, words, general, staged, R, 1](
+                    nodes, root, block_x, stage, row_index, width, stride
+                )
+                tree += 1
+    comptime for k in range(R):
+        partial[unsafe_offset=grove * chunk + lane + k * lanes] = total[k]
     barrier()
     if groves <= 16:
         # Narrow reductions: one thread per row beats a warp shuffle tree.
-        if tid < active:
-            var sum = partial[unsafe_offset=tid]
+        for r in range(tid, active, threads):
+            var sum = partial[unsafe_offset=r]
             for g in range(1, groves):
-                sum += partial[unsafe_offset=g * chunk + tid]
+                sum += partial[unsafe_offset=g * chunk + r]
             finish[mode](
-                y, first + tid, sum, trees, average, bias, alpha, threshold
+                y, first + r, sum, trees, average, bias, alpha, threshold
             )
     else:
-        var lane = lane_id()
-        for rr in range(tid // WARP_SIZE, active, threads // WARP_SIZE):
+        var warp_lane = lane_id()
+        for r in range(tid // WARP_SIZE, active, threads // WARP_SIZE):
             var sum = Scalar[dtype](0)
-            for g in range(Int(lane), groves, WARP_SIZE):
-                sum += partial[unsafe_offset=g * chunk + rr]
+            for g in range(Int(warp_lane), groves, WARP_SIZE):
+                sum += partial[unsafe_offset=g * chunk + r]
             sum = warp_sum(sum)
-            if lane == 0:
+            if warp_lane == 0:
                 finish[mode](
-                    y, first + rr, sum, trees, average, bias, alpha, threshold
+                    y, first + r, sum, trees, average, bias, alpha, threshold
                 )
 
 
