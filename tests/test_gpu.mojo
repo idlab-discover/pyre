@@ -1,7 +1,7 @@
 """GPU semantic, storage, and GTIL acceptance checks (requires a GPU)."""
 from acceptance import stump, check_edges
 from reference_data import check_references
-from balsa import load, Model, ModelBuilder, TreeBuilder, Operator, TaskType
+from balsa import load_editable, Model, ModelBuilder, TreeBuilder, Operator, TaskType
 from max.gpu.host import DeviceContext
 from pyre import Forest
 from pyre.gpu import (
@@ -123,7 +123,7 @@ def test_preparation_and_independent_contexts() raises:
         assert_equal(moved.predict(x1).to_host().item(0), Float64(-1))
         assert_equal(f2.predict(x2).to_host().item(0), Float64(-1))
     for name in ["category", "vector", "multi_target"]:
-        var unsupported = load[DType.float64](
+        var unsupported = load_editable[DType.float64](
             "build/balsa-reference/tests/fixtures/float64_" + name + ".tl"
         )
         with assert_raises():

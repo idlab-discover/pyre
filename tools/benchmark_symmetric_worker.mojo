@@ -2,7 +2,7 @@
 from std.sys import argv
 from std.time import perf_counter_ns
 from std.benchmark import keep
-from balsa import load
+from balsa import load_editable
 from pyre import Forest
 from pyre._cpu import _CPUPlan, _GENERAL, _DIRECT
 from cpu_samples import samples, save
@@ -27,7 +27,7 @@ def predict[
 
 def run[dtype: DType](args: List[String]) raises:
     var threads = Int(args[6])
-    var model = load[dtype](args[1])
+    var model = load_editable[dtype](args[1])
     var x = samples[dtype](args[3], Int(args[4]), Int(args[5]))
     var forest = Forest(model^)
     # Development controls validate the route without changing prepared storage.

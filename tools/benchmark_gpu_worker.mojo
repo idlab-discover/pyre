@@ -3,7 +3,7 @@ from std.sys import argv
 from std.time import perf_counter_ns
 from std.benchmark import keep
 from std.math import nan, inf
-from balsa import decode
+from balsa import decode_editable
 from balsa.codec import read_file
 from max.gpu.host import DeviceContext
 from pyre import Forest
@@ -104,7 +104,7 @@ def run[
     var bytes = read_file(path)
     var read_ns = perf_counter_ns() - t
     t = perf_counter_ns()
-    var model = decode[dtype](bytes^)
+    var model = decode_editable[dtype](bytes^)
     var decode_ns = perf_counter_ns() - t
     t = perf_counter_ns()
     var forest = GpuForest.prepare(model, ctx)
@@ -250,7 +250,7 @@ def run[
                         var data = read_file(path)
                         keep(data)
                     elif measured == "decode":
-                        var f = decode[dtype](encoded.copy())
+                        var f = decode_editable[dtype](encoded.copy())
                         keep(f)
                     elif measured == "samples":
                         var x = NDArray[dtype](

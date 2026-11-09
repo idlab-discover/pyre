@@ -1,5 +1,5 @@
 """Explicit preparation/upload, resident prediction, and explicit download."""
-from balsa import load
+from balsa import load_editable
 from max.gpu.host import DeviceContext
 from layout import TileTensor, row_major
 from pyre.gpu import GpuForest, GpuArray, GpuBatch, upload, upload_into
@@ -9,7 +9,7 @@ from numojo.core.type_aliases import Shape
 
 def main() raises:
     var context = DeviceContext()
-    var model = load(
+    var model = load_editable(
         "build/balsa-reference/tests/fixtures/float32_op2_missing0.tl"
     )
     var forest = GpuForest.prepare(model, context)

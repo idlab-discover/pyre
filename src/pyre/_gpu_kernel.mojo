@@ -17,10 +17,10 @@ staged as order-preserving keys, removing the per-visit conversion.
 Node encoding: see `_layout.mojo`. The GPU packs keyed float64 thresholds
 and normalizes LE splits to LT wherever possible.
 """
-from std.gpu import block_idx, block_dim, thread_idx, lane_id, WARP_SIZE
+from max.gpu import block_idx, block_dim, thread_idx, lane_id, WARP_SIZE
 from max.gpu.sync import barrier
 from max.gpu.memory import external_memory, AddressSpace
-from std.gpu.primitives import warp
+from max.gpu.primitives import warp
 from std.math import isnan, exp
 from std.memory import bitcast
 from std.bit import log2_floor

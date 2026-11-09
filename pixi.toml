@@ -14,7 +14,7 @@ package = { cmd = "mojo precompile -I build/balsa-reference/src src/pyre -o buil
 test-consumer = { cmd = "python tools/check_consumer.py", depends-on = ["package"] }
 release = { cmd = "python tools/build_release.py", depends-on = ["test-consumer"] }
 test = { cmd = "mojo run -I src -I build/balsa-reference/src -I tests tests/test_forest.mojo", depends-on = ["prepare"] }
-test-cpu-only = { cmd = "mojo run --target-accelerator=none -I src -I build/balsa-reference/src -I tests tests/test_forest.mojo", depends-on = ["prepare"] }
+test-cpu-only = { cmd = "mojo run --target-accelerator=none -D PYRE_CPU_ONLY -I src -I build/balsa-reference/src -I tests tests/test_forest.mojo", depends-on = ["prepare"] }
 model-memory-build = { cmd = "mojo build -I src -I build/balsa-reference/src tools/model_memory_worker.mojo -o build/model-memory-worker", depends-on = ["prepare"] }
 test-python = { cmd = "python -m unittest discover -s tests -p 'test_*.py'", depends-on = ["model-memory-build"] }
 test-gpu-transfers = { cmd = "mojo run -I src -I build/balsa-reference/src tests/test_accelerator.mojo", depends-on = ["prepare"] }
@@ -40,9 +40,9 @@ benchmark-build = { cmd = "mojo build -I src -I build/balsa-reference/src tools/
 benchmark = { cmd = "python tools/benchmark.py", depends-on = ["benchmark-build"] }
 
 [dependencies]
-mojo = "==1.0.0"
+mojo = "==1.2.0"
 # Supplies max.algorithm CPU executor and the existing accelerator runtime.
-max-core = "==26.5.0"
-numojo = "==0.10.0"
+max-core = "==26.7.0"
+numojo = "==0.12.0"
 python = ">=3.12,<3.14"
 pyperf = ">=2.9,<3"

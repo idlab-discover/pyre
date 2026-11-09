@@ -4,7 +4,7 @@ from std.math import ceildiv, exp, isnan
 from std.sys import simd_width_of, size_of
 from std.sys.info import num_physical_cores
 from std.runtime import initialize_runtime
-from std.runtime.asyncrt import parallelism_level
+from max.runtime.asyncrt import parallelism_level
 from ._executor import _Executor
 from ._validation import validate_inference
 from ._symmetric import _Symmetric
@@ -481,7 +481,7 @@ struct _CPUPlan[dtype: DType = DType.float32](Movable):
                 == _BINNED else 0
             )
             var bin_output = bins.unsafe_ptr()
-            var scratch = InlineArray[SIMD[Self.dtype, width], tile_blocks](
+            var scratch = Array[SIMD[Self.dtype, width], tile_blocks](
                 uninitialized=True
             )
             for tile in range(begin, end, tile_blocks):
@@ -651,7 +651,7 @@ struct _CPUPlan[dtype: DType = DType.float32](Movable):
         initialize_runtime()
         var limit = self._cores
         if num_threads > 0:
-            limit = min(num_threads, parallelism_level())
+            limit = min(num_threads, parallelism_level(None))
         return max(1, min(blocks, limit, tasks))
 
     def predict(

@@ -4,7 +4,7 @@ No inference calls or model copies. Forest consumes the model: Balsa groups
 describe the construction input, released once packing completes.
 """
 from std.sys import argv, size_of
-from balsa import Model, Tree, load_auto
+from balsa import Model, Tree, load_auto_editable
 from balsa.model import Extension
 from pyre import Forest
 from pyre._executor import _State
@@ -139,7 +139,7 @@ def main() raises:
     var args = argv()
     if len(args) != 2:
         raise Error("Usage: model-memory-worker MODEL.tl")
-    var model = load_auto(String(args[1]))
+    var model = load_auto_editable(String(args[1]))
     if model.isa[Model[DType.float32]]():
         audit(model^.unwrap[Model[DType.float32]]())
     else:

@@ -1,5 +1,5 @@
 """Shared prediction rules and cases, with CPU/GPU execution adapters."""
-from balsa import load, Model, ModelBuilder, TreeBuilder, Operator, TaskType
+from balsa import load_editable, Model, ModelBuilder, TreeBuilder, Operator, TaskType
 from max.gpu.host import DeviceContext
 from pyre import Forest
 from pyre.gpu import GpuForest, upload
@@ -220,7 +220,7 @@ def check_dense_reference[
     predictions: List[Scalar[dtype]],
     tolerance: Scalar[dtype] = 0,
 ) raises:
-    var model = load[dtype]("build/balsa-reference/tests/fixtures/" + name)
+    var model = load_editable[dtype]("build/balsa-reference/tests/fixtures/" + name)
     check_model[dtype, on_gpu](
         name, model^, values, expected, predictions, tolerance
     )

@@ -6,7 +6,7 @@ from std.atomic import Atomic
 from std.testing import assert_equal, assert_raises, TestSuite
 from std.time import perf_counter_ns
 from max.algorithm import parallelize
-from balsa import load, Model, ModelBuilder, TreeBuilder, Operator, TaskType
+from balsa import load_editable, Model, ModelBuilder, TreeBuilder, Operator, TaskType
 from numojo import NDArray
 from numojo.core.type_aliases import Shape
 from numojo.core.layout.ndstrides import NDArrayStrides
@@ -78,7 +78,7 @@ def test_parallel_offset_view() raises:
 
 def _check_trained[dtype: DType](name: String, binary: Bool) raises:
     var forest = Forest(
-        load[dtype](
+        load_editable[dtype](
             "build/balsa-reference/tests/fixtures/frameworks/" + name + ".tl"
         )
     )
@@ -145,7 +145,7 @@ def test_parallel_classifier_empty_and_thresholds() raises:
 def test_negative_thread_counts() raises:
     var regression = Forest(stump[DType.float32](Operator.LT, False, trees=1))
     var classifier = Forest(
-        load("build/balsa-reference/tests/fixtures/float32_sigmoid.tl")
+        load_editable("build/balsa-reference/tests/fixtures/float32_sigmoid.tl")
     )
     for rows in [0, 3]:
         var x = NDArray[DType.float32](Shape(rows, 1))
@@ -242,9 +242,9 @@ def test_nested_executor_reuse() raises:
 
 def test_executor_joins_every_partition() raises:
     var executor = _Executor()
-    var visits = List[Atomic[DType.int64]]()
+    var visits = List[Atomic[Int64]]()
     for _ in range(8):
-        visits.append(Atomic[DType.int64](0))
+        visits.append(Atomic[Int64](0))
     var counts = visits.unsafe_ptr()
 
     def work(i: Int) {counts}:
@@ -283,7 +283,7 @@ def test_move_forest_after_context_warmup() raises:
 def test_parallel_cpu_accelerator_adapters() raises:
     var forest = Forest(stump[DType.float32](Operator.LT, False, trees=1))
     var classifier = Forest(
-        load("build/balsa-reference/tests/fixtures/float32_sigmoid.tl")
+        load_editable("build/balsa-reference/tests/fixtures/float32_sigmoid.tl")
     )
     for rows in [0, 1, 1031]:
         var host = NDArray[DType.float32](Shape(rows, 1))

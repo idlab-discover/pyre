@@ -3,7 +3,7 @@ from std.sys import argv
 from std.time import perf_counter_ns
 from std.benchmark import keep
 from std.math import nan
-from balsa import ModelBuilder, TreeBuilder, Operator, TaskType, load
+from balsa import ModelBuilder, TreeBuilder, Operator, TaskType, load_editable
 from pyre import Forest
 from numojo import NDArray
 from numojo.core.type_aliases import Shape
@@ -73,7 +73,7 @@ def execute[
         builder.add_tree(tree^.build())
     var model = builder^.build()
     if depth == 0:
-        model = load[dtype](
+        model = load_editable[dtype](
             "build/balsa-reference/tests/fixtures/frameworks/xgboost_regression.tl"
         )
     var forest = Forest(model^)

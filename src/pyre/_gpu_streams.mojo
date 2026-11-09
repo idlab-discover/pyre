@@ -26,11 +26,11 @@ struct _Streams(Copyable, Movable):
 
 
 struct _State(Movable):
-    var busy: Atomic[DType.int64]
+    var busy: Atomic[Int64]
     var streams: Optional[_Streams]
 
     def __init__(out self):
-        self.busy = Atomic[DType.int64](0)
+        self.busy = Atomic[Int64](0)
         self.streams = None
 
 

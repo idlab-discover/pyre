@@ -1,5 +1,5 @@
 """Balsa discovers precision; Pyre consumes the model and evaluates arrays."""
-from balsa import Model, load_auto
+from balsa import Model, load_auto_editable
 from pyre import Forest
 from numojo import NDArray
 from numojo.core.type_aliases import Shape
@@ -15,7 +15,7 @@ def predict[dtype: DType](var model: Model[dtype]) raises:
 
 
 def main() raises:
-    var model = load_auto("build/balsa-reference/tests/fixtures/float64_op2_missing0.tl")
+    var model = load_auto_editable("build/balsa-reference/tests/fixtures/float64_op2_missing0.tl")
     if model.isa[Model[DType.float32]]():
         predict(model^.unwrap[Model[DType.float32]]())
     else:

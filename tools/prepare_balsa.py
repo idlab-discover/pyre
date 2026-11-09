@@ -7,7 +7,7 @@ import subprocess
 import tarfile
 import tempfile
 
-COMMIT = "737874f3eae9d95a0517397130f445b303d28cc6"
+COMMIT = "8c6412873e6b28ba60df29ffc840a9f6493dfe7e"
 REPOSITORY = "https://github.com/idlab-discover/balsa.git"
 ROOT = Path(__file__).resolve().parents[1]
 DEST = ROOT / "build/balsa-reference"

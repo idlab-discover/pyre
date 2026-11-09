@@ -1,5 +1,6 @@
 from std.testing import assert_equal, assert_raises, TestSuite
-from balsa import load, load_auto, Model
+from std.sys import is_defined
+from balsa import load_editable, load_auto_editable, Model
 from pyre import Forest
 from numojo import NDArray
 from numojo.core.type_aliases import Shape
@@ -36,7 +37,7 @@ def test_owned_preparation_and_offset_view() raises:
 
 def test_invalid_inputs_and_unsupported_models() raises:
     var forest = Forest(
-        load("build/balsa-reference/tests/fixtures/float32_op2_missing0.tl")
+        load_editable("build/balsa-reference/tests/fixtures/float32_op2_missing0.tl")
     )
     var rank_one = NDArray[DType.float32](Shape(3))
     with assert_raises():
@@ -51,7 +52,7 @@ def test_invalid_inputs_and_unsupported_models() raises:
     with assert_raises():
         _ = forest.predict_proba(backing)
     for name in ["category", "vector", "multi_target"]:
-        var model = load(
+        var model = load_editable(
             "build/balsa-reference/tests/fixtures/float32_" + name + ".tl"
         )
         with assert_raises():
@@ -76,7 +77,7 @@ def check_owned_model[dtype: DType](var model: Model[dtype]) raises:
 
 def test_balsa_automatic_precision_and_move() raises:
     for name in ["float32_op2_missing0", "float64_op2_missing0"]:
-        var loaded = load_auto(
+        var loaded = load_auto_editable(
             "build/balsa-reference/tests/fixtures/" + name + ".tl"
         )
         if loaded.isa[Model[DType.float32]]():
@@ -92,7 +93,7 @@ def test_trained_unsupported_semantics() raises:
         "sklearn_rf_multiclass",
         "sklearn_extra_multioutput_classification",
     ]:
-        var model = load[DType.float64](
+        var model = load_editable[DType.float64](
             "build/balsa-reference/tests/fixtures/frameworks/" + name + ".tl"
         )
         with assert_raises():
@@ -100,8 +101,12 @@ def test_trained_unsupported_semantics() raises:
 
 
 def test_accelerator_cpu_and_gpu_rejection() raises:
-    check_device[Device.CPU]()
-    check_gpu_unimplemented()
+    # Under Mojo 1.2, NuMojo 0.12's AcceleratorNDArray (any device) holds an
+    # Optional[DeviceContext], which cannot be laid out when built with
+    # --target-accelerator=none. test-cpu-only defines PYRE_CPU_ONLY.
+    comptime if not is_defined["PYRE_CPU_ONLY"]():
+        check_device[Device.CPU]()
+        check_gpu_unimplemented()
 
 
 def main() raises:

@@ -5,17 +5,22 @@ from std.os import abort
 from std.memory import MutPointer
 from std.memory.alloc import unsafe_alloc
 from std.utils.numerics import FlushDenormals
-from max.gpu.host import DeviceContext
+from std.sys.info import CompilationTarget
+from max.gpu.host.device_context import DeviceContextBase
 from max.runtime import tracing
 from max.runtime.tracing import Trace, TraceLevel
 
+# Host-target context: plain `DeviceContext` is parameterized on the default
+# accelerator, so its layout cannot be computed under --target-accelerator=none.
+comptime _CpuContext = DeviceContextBase[CompilationTarget()]
+
 
 struct _State(Movable):
-    var busy: Atomic[DType.int64]
-    var context: Optional[DeviceContext]
+    var busy: Atomic[Int64]
+    var context: Optional[_CpuContext]
 
     def __init__(out self):
-        self.busy = Atomic[DType.int64](0)
+        self.busy = Atomic[Int64](0)
         self.context = None
 
 
@@ -64,13 +69,13 @@ struct _Executor(Movable):
                     abort(String(error))
 
         with _Lease(self._state) as cached:
-            var context: DeviceContext
+            var context: _CpuContext
             if cached:
                 if not self._state[].context:
-                    self._state[].context = DeviceContext(api="cpu")
+                    self._state[].context = _CpuContext(api="cpu")
                 context = self._state[].context.value()
             else:
-                context = DeviceContext(api="cpu")
+                context = _CpuContext(api="cpu")
             # Direct enqueue avoids parallelize's eager default-context
             # construction even when its optional context argument is supplied.
             try:
