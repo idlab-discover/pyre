@@ -107,7 +107,7 @@ Supported: float32 and float64 numerical scalar leaves; EQ/LT/LE/GT/GE; NaN defa
 routing; root-only/uneven-depth trees; single-output regression/identity and
 binary/sigmoid; averaging, base scores, sigmoid alpha and stable probabilities.
 Categorical splits, vector leaves, multiclass/multi-target output, unknown
-extensions and other task/transform combinations are rejected. Leaf-ID/per-tree output and autotuning remain future work.
+extensions and other task/transform combinations are rejected. Leaf-ID/per-tree output remains future work.
 
 ## CPU threading
 
@@ -159,14 +159,59 @@ for float64, or for float32 forests with more than 8,192 features or trees of
 GT/GE exchange children, LE becomes LT on the next representable threshold
 (except at +inf), and NaN thresholds keep their always-false routing. Float64
 splits compare order-preserving integer keys, avoiding the low FP64 compare
-rate of consumer GPUs; results are identical to IEEE comparisons. When a
-block's rows fit an 8 KiB budget, float64 inputs are converted to keys once
-per block and staged in shared memory instead of once per visited node. Each block
-evaluates a small power-of-two group of rows, with threads split across trees
-and per-row partials reduced in shared memory. Rows per block and threads per
-block are chosen from row count, tree count and row width, from a sweep on an
-RTX 5090. Unlike the CPU path, tree summation order differs from model order,
-so GPU and CPU margins can differ in the last bits.
+rate of consumer GPUs; results are identical to IEEE comparisons.
+
+Each block owns a power-of-two group of rows; its threads split across trees,
+and per-row partials meet in shared memory. Every thread walks one, two or four
+independent (row, tree) chains in lockstep, keeping several dependent node
+loads in flight. A block can first copy its rows into shared memory, transposed
+with an odd stride so that neither the copy nor the per-node reads conflict on
+banks; float64 rows are converted to keys once there instead of on every visit.
+Unlike the CPU path, tree summation order differs from model order and depends
+on the launch plan, so GPU and CPU margins can differ in the last bits.
+
+### Launch plans and tuning
+
+A `GpuPlan` fixes rows per block (`1 << chunk_shift`), threads per block,
+`rows_per_thread` x `trees_per_thread` chains, and `staged`. Preparation reads
+the device's SM count, warp size and thread, block and shared-memory limits;
+`forest.plan(rows)` derives a default from those and from the forest's tree
+count, mean depth, node bytes and row width. No constants are fitted to one GPU:
+staging, rows per block and threads follow from occupancy and from how much of
+an SM's shared memory the block's rows and in-flight trees occupy.
+
+`forest.tune(batch)` measures candidate plans on your data and keeps the
+fastest for the batch's power-of-two row bucket (2,049-4,096 rows share one
+bucket); calls with more rows than any tuned bucket use the largest tuned plan.
+The search starts at the default plan and varies rows per block, threads and
+staging jointly, then the chain shape, until nothing improves by more than 2%.
+It reads the batch without changing it, measures larger batches on a prefix of
+several full device waves, and typically takes 20-500 ms, longer for very large
+forests. Tune once per process with representative rows, before latency matters.
+
+```mojo
+var plan = gpu_forest.tune(batch)  # measure on representative rows
+print(plan)  # e.g. GpuPlan(chunk_shift=6, threads=512, rows_per_thread=2, ...)
+gpu_forest.use_plan(65536, plan)   # pin a plan, e.g. one saved from tuning
+```
+
+`use_plan(rows, plan)` validates a plan against the device and pins it for
+that bucket, so repeated runs launch identically. Tuned and pinned plans live
+in the prepared forest. Default and pinned plans are deterministic; tuning picks
+by timing, so two processes may choose different plans and differ in the last
+bits. Plans opt in to more than the default 48 KiB of shared memory when the
+device allows it.
+
+### Host arrays
+
+The four prediction names also accept host `NDArray` inputs and return host
+arrays: `gpu_forest.predict_margin(samples)`. These calls split large batches
+into slabs and overlap the next slab's upload with earlier slabs' kernels and
+downloads, on two cached copy streams. Results are identical to explicit
+`upload`, device prediction and `to_host` with the same plan. They are fastest when
+kernels are long relative to the upload; light forests remain bound by the
+host-memory upload. Use device arrays and `*_into` methods to keep inputs
+resident across calls.
 
 ```mojo
 from max.gpu.host import DeviceContext
@@ -217,7 +262,8 @@ all Pyre uses. Do not mutate private fields or shared input storage during calls
 All public operations finish before returning, including the `*_into` methods.
 External producers must complete before prediction. Calls sharing a context
 must not overlap; independent contexts are supported. GPU inference never stages
-inputs to CPU or implicitly downloads results. A failed enqueue drains the
+inputs to CPU or implicitly downloads results; only the host-array overloads
+transfer, explicitly by their signature. A failed enqueue drains the
 stream before unwinding; a failed synchronization aborts because storage may
 still be in use. No cuFile or Python dependency is used by inference or transfers.
 

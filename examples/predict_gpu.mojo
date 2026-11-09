@@ -22,6 +22,14 @@ def main() raises:
     forest.predict_into(batch, output)
     print(output.to_host())  # [-1, 3, 3]
 
+    # Host arrays in, host arrays out: large batches overlap upload and
+    # compute across streams.
+    print(forest.predict(samples))  # [-1, 3, 3]
+
+    # Measure launch plans on representative rows; later calls reuse the plan.
+    var plan = forest.tune(batch)
+    forest.use_plan(3, plan)
+
     # Fixed shape: reuse the device batch and prediction output.
     samples.itemset(0, 1)
     upload_into(samples, batch)

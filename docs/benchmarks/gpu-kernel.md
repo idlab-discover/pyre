@@ -1,5 +1,90 @@
 # GPU row-chunk × tree kernel
 
+## Multi-chain traversal, transposed staging and launch plans (2026-11-09)
+
+Changes since 9d1f729 (see `src/pyre/_gpu_kernel.mojo` and `src/pyre/gpu.mojo`):
+
+- **Chains per thread.** A thread walks 1, 2 or 4 independent (row, tree) chains
+  in lockstep (`rows_per_thread` × `trees_per_thread`), so several dependent node
+  loads are in flight per thread. Finished chains step by zero.
+- **Transposed staging, both precisions.** Staged rows sit in shared memory as
+  `stage[feature * (chunk + 1) + row]`. Lanes on distinct rows hit distinct banks,
+  and the odd stride keeps the coalesced fill conflict-free. The earlier row-major
+  staging put a whole warp on one bank at the root (32 features → stride 32 words),
+  which is why staging had measured slower. Stages above 48 KiB opt in to the
+  device's larger dynamic shared memory.
+- **Launch plans from the device.** `GpuPlan` replaces the RTX 5090-fitted policy.
+  The default derives from discovered SM count, warp size, thread/block limits and
+  shared memory, and from the forest's trees, mean depth, node bytes and row width.
+  `tune(batch)` measures candidates on real rows (rows per block × threads × staging
+  jointly, then chain shapes) and keeps the best per power-of-two bucket.
+  `use_plan` pins one. The warp reduction follows the target's `WARP_SIZE`.
+- **Pipelined host arrays.** NDArray overloads of the four prediction methods
+  overlap slab uploads with compute and downloads across two cached copy streams.
+
+Method: RTX 5090 desktop with an active display, native completed calls, resident
+input and reused output. Each cell is the median of three samples of at least
+20 ms, from one process; the old and new kernels ran back to back. All cells pass
+whole-batch agreement with nvForest and GTIL checks on 257 rows (`explore.py`), and
+every plan in `test_launch_configurations` matches CPU. Hardware counters were
+unavailable (`RmProfilingAdminOnly=1`), so plans were chosen by timing alone.
+Run-to-run drift on this shared desktop reached about 10%; compare within a row.
+
+Completed-call latency (µs). The nvForest best column is the best of depth/breadth
+layout × chunk {auto, 1, 8, 32}.
+
+| Model | Rows | Pyre 9d1f729 | Pyre default | Pyre tuned | nvForest auto | nvForest best |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| base (64 trees, d6) | 65,536 | 31.9 | 24.5 | 24.5 | 74.2 | 44.5 |
+| trees-1 | 65,536 | 14.8 | 11.9 | 9.4 | 19.3 | 19.3 |
+| trees-256 | 65,536 | 138.2 | 82.9 | 79.3 | 262.7 | 181.5 |
+| trees-1024 | 65,536 | 507.4 | 286.4 | 287.9 | 1005.7 | 664.8 |
+| depth-10 | 65,536 | 81.4 | 61.2 | 45.0 | 104.2 | 90.4 |
+| features-512 | 65,536 | 88.8 | 91.9 | 85.3 | 438.3 | 132.3 |
+| float64 | 65,536 | 53.7 | 44.7 | 44.7 | 131.4 | 119.5 |
+| catboost-64-depth6 (f64) | 65,536 | 49.7 | 40.5 | 39.6 | 134.5 | 117.1 |
+| trees-1024 | 4,096 | 60.6 | 36.1 | 36.5 | 208.1 | 59.9 |
+| depth-10 | 4,096 | 15.5 | 16.1 | 12.8 | 26.6 | 14.6 |
+| features-512 | 4,096 | 12.2 | 13.1 | 11.8 | 29.1 | 12.3 |
+
+At 262,144 rows (Pyre only): trees-1024 1904 → 994 µs (default), depth-10
+319 → 180 → 156 (tuned), trees-1 37.4 → 23.4 → 17.2, features-128
+146 → 139 → 111.
+
+In the full 18-model × {1, 33, 4096, 65536} nvForest screen, Pyre's default plans
+were faster than nvForest auto in 71/72 cells. The exception was trees-1 at one
+row (7.42 vs 7.36 µs), which is launch latency. Against nvForest's best probed
+setting on the eight heavy models above at 4,096 and 65,536 rows, default plans
+won 13/16 cells and tuned plans 15/16. The remaining losses and the trees-1 tie
+are at most 10% and 0.1-1.5 µs. Below a few thousand rows every engine sits on
+the ~7 µs launch-and-synchronize floor.
+
+Tuning took 22-560 ms per bucket in these runs, and 1.2 s for trees-1024 at
+262,144 rows. The default plan is within a few percent of tuned for most
+models. The largest remaining gaps are deep trees (depth-10, 1.36×) and wide
+or single-tree forests.
+
+Host-array prediction at 262,144 rows (host input → host output, best of 7):
+
+| Model | upload + predict + to_host | pipelined |
+| --- | ---: | ---: |
+| trees-1024 | 3160 µs | 2414 µs |
+| trees-256 | 2467 | 2271 |
+| float64 | 4829 | 4589 |
+| base | 2283 | 2227 |
+| features-512 | 37,398 | 37,524 |
+
+Uploads from pageable host memory are bound by host memory bandwidth (~15-16 GB/s
+here; pinned DMA reaches 28 GB/s, but copying into pinned memory first runs at
+the same ~15 GB/s). Pipelining hides kernels and downloads, so its gain grows
+with kernel time.
+
+Experiments that measured slower and were not kept: summing leaf values after
+the walk instead of on its last pass (2-4% slower, one more dependent load),
+and `not (v >= t)` NaN routing (2-4% slower, a divergent branch).
+
+## Earlier: replacing the one-row-per-thread kernel
+
 Replaces the one-row-per-thread GPU kernel. Design (see `src/pyre/_gpu_kernel.mojo`):
 
 - **Packed depth-first nodes.** 8 bytes per float32 node (threshold/leaf, plus a

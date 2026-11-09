@@ -1,13 +1,18 @@
 """GPU traversal over packed depth-first nodes, split by row chunk and tree.
 
-Each block owns `chunk` consecutive rows (a power of two up to 32). Thread
-`tid` evaluates row `tid % chunk` on trees `tid / chunk`, `+ groves`, ... and
-accumulates privately. Per-row partials meet in dynamic shared memory and are
-summed by one thread per row when there are few, otherwise by a warp per row.
-Float32 rows are read from global memory: staging them in shared memory
-measured slower, since it shrinks the L1 that caches nodes. Float64 rows are
-staged as order-preserving keys when small, which removes the per-visit key
-conversion.
+Each block owns `chunk` consecutive rows (a power of two). They split into
+`lanes = chunk / rows_per_thread`; thread `tid` takes lane `tid % lanes` and
+grove `tid / lanes`, and walks rows `lane + k * lanes` on `trees_per_thread`
+trees at a time, striding over trees by groves. Its independent chains advance
+in lockstep so their node loads overlap. Per-row partials meet in dynamic
+shared memory and are summed by one thread per row when there are few, else by
+a warp per row.
+
+Staged blocks first copy their rows into shared memory transposed,
+`stage[feature * (chunk + 1) + row]`: lanes on distinct rows read distinct
+banks, and the odd stride keeps the coalesced fill conflict-free too.
+(Row-major staging put a whole warp on one bank at the root.) Float64 rows are
+staged as order-preserving keys, removing the per-visit conversion.
 
 Node encoding: see `_layout.mojo`. The GPU packs keyed float64 thresholds
 and normalizes LE splits to LT wherever possible.

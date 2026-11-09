@@ -67,8 +67,11 @@ CPU calls use `num_threads=0` for work-based automatic scheduling up to the
 physical core count; an explicit positive value sets a per-call task limit.
 Only constant forests always run serially. `GpuForest` uses explicit device
 storage and completes calls before returning; `*_into` methods reuse output
-allocations, which roughly halves small-batch GPU latency. GPU execution
-has been validated on an RTX 5090; other GPU targets remain unvalidated.
+allocations, which roughly halves small-batch GPU latency. GPU launch plans
+derive from the device's discovered limits, and `tune(batch)` measures the
+best plan on your data; host-array calls overlap uploads with compute. GPU
+execution has been validated on an RTX 5090; other GPU targets remain
+unvalidated.
 See the [user guide](docs/usage.md) and [GPU example](examples/predict_gpu.mojo).
 
 ## Performance snapshot
