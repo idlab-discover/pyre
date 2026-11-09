@@ -1,7 +1,7 @@
 """GPU semantic, storage, and GTIL acceptance checks (requires a GPU)."""
 from acceptance import stump, check_edges
 from reference_data import check_references
-from balsa import load, Model, ModelBuilder, TreeBuilder, Operator
+from balsa import load, Model, ModelBuilder, TreeBuilder, Operator, TaskType
 from max.gpu.host import DeviceContext
 from pyre import Forest
 from pyre.gpu import (
@@ -510,6 +510,84 @@ def test_wide_staging_opt_in() raises:
     for i in range(300):
         var e = expected.item(i)
         assert_true(abs(y.item(i) - e) <= Float32(1e-5) * (1 + abs(e)))
+
+
+def check_pipelined[dtype: DType]() raises:
+    """Host-array predictions match the device-array path in every mode,
+    across several slabs with a partial last slab."""
+    var model = random_forest[dtype](23, 7, 6, 21)
+    var ctx = DeviceContext()
+    var forest = GpuForest.prepare(model.copy(), ctx)
+    var rows = 3 * max(1024, forest._device.sms * 256) + 999
+    assert_true(forest._slab_rows(rows) < rows)
+    var x = random_rows[dtype](rows, 7, 3)
+    var batch = upload(x, ctx)
+    # Pin one plan so both paths sum trees in the same order.
+    forest.use_plan(rows, forest.plan(forest._slab_rows(rows)))
+    var expected = forest.predict_margin(batch).to_host()
+    var got = forest.predict_margin(x)
+    assert_equal(got.size, rows)
+    for i in range(rows):
+        assert_equal(got.item(i), expected.item(i))
+    var regression = forest.predict(x)
+    assert_equal(regression.item(rows - 1), expected.item(rows - 1))
+    with assert_raises():
+        _ = forest.predict_proba(x)
+    model.task_type = TaskType.BINARY_CLF
+    model.set_postprocessor_name("sigmoid")
+    var classifier = GpuForest.prepare(model, ctx)
+    classifier.use_plan(rows, classifier.plan(classifier._slab_rows(rows)))
+    var proba = classifier.predict_proba(x)
+    var proba_device = classifier.predict_proba(batch).to_host()
+    assert_equal(proba.size, 2 * rows)
+    for i in range(2 * rows):
+        assert_equal(proba.item(i), proba_device.item(i))
+    var labels = classifier.predict_class(x, 0.25)
+    var labels_device = classifier.predict_class(batch, 0.25).to_host()
+    for i in range(rows):
+        assert_equal(labels.item(i), labels_device.item(i))
+    with assert_raises():
+        _ = classifier.predict(x)
+    with assert_raises():
+        _ = classifier.predict_class(x, 2)
+
+
+def test_pipelined_host_prediction() raises:
+    check_pipelined[DType.float32]()
+    check_pipelined[DType.float64]()
+
+
+def test_pipelined_shapes() raises:
+    var ctx = DeviceContext()
+    var model = random_forest[DType.float32](5, 3, 4, 2)
+    var forest = GpuForest.prepare(model, ctx)
+    assert_equal(
+        forest.predict_margin(NDArray[DType.float32](Shape(0, 3))).size, 0
+    )
+    with assert_raises():
+        _ = forest.predict_margin(NDArray[DType.float32](Shape(4, 2)))
+    with assert_raises():
+        _ = forest.predict_margin(NDArray[DType.float32](Shape(4)))
+    var host = random_rows[DType.float32](8, 3, 9)
+    var strided = host.view_with_layout(Shape(4, 3), NDArrayStrides(6, 1), 0)
+    with assert_raises():
+        _ = forest.predict_margin(strided)
+    # Contiguous views with an offset are read from their first element.
+    var view = host.view_with_layout(Shape(5, 3), NDArrayStrides(3, 1), 9)
+    var tail = forest.predict_margin(view)
+    var whole = forest.predict_margin(host)
+    for i in range(5):
+        assert_equal(tail.item(i), whole.item(i + 3))
+    # Zero features: every slab skips its (empty) upload.
+    var builder = ModelBuilder(num_feature=0, base_scores=[0.25])
+    var tree = TreeBuilder(num_nodes=1)
+    tree.leaf(0, 1.5)
+    builder.add_tree(tree^.build())
+    var constant = GpuForest.prepare(builder^.build(), ctx)
+    var rows = 3 * max(1024, constant._device.sms * 256) + 5
+    var y = constant.predict(NDArray[DType.float32](Shape(rows, 0)))
+    assert_equal(y.size, rows)
+    assert_equal(y.item(rows - 1), Float32(1.75))
 
 
 def test_wide_float32_nodes() raises:

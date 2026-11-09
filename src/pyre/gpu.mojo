@@ -6,10 +6,12 @@ from max.gpu.host import (
     DeviceAttribute,
     FuncAttribute,
 )
+from std.memory import unsafe_memcpy
 from std.bit import next_power_of_two
 from std.math import ceildiv, inf
 from std.sys import size_of
 from std.time import perf_counter_ns
+from numojo import NDArray
 from numojo.core.type_aliases import Shape
 from ._validation import validate_inference
 from ._gpu_storage import (
@@ -19,7 +21,9 @@ from ._gpu_storage import (
     _Join,
     _gpu,
     _same_device,
+    _check_upload,
 )
+from ._gpu_streams import _StreamCache, _JoinAll
 from ._gpu_kernel import predict_kernel
 from ._layout import OP_LT, node_count, node_words, pack, path_length
 
@@ -130,6 +134,7 @@ struct GpuForest[dtype: DType = DType.float32](Movable):
     var _device: _Device
     var _depth: Float64
     var _tuned: List[_Tuned]
+    var _streams: _StreamCache
 
     def __init__(out self, model: Model[Self.dtype], ctx: DeviceContext) raises:
         _gpu(ctx)
@@ -164,8 +169,10 @@ struct GpuForest[dtype: DType = DType.float32](Movable):
         self._device = _Device.query(ctx)
         self._depth = path_length(model) / Float64(max(trees, 1))
         self._tuned = List[_Tuned]()
+        self._streams = _StreamCache()
 
     def __deinit__(deinit self):
+        _ = self._streams^
         _ = self._nodes^
         _ = self._roots^
         _ = self._context^
@@ -788,3 +795,151 @@ struct GpuForest[dtype: DType = DType.float32](Movable):
         )
         self.predict_class_into(x, result, threshold)
         return result^
+
+    # ----------------------------------------------------------------------
+    # Pipelined host prediction
+
+    def _slab_rows(self, rows: Int) -> Int:
+        """Rows per pipelined slab: up to eight slabs, each still several
+        waves of blocks so every launch fills the device."""
+        var least = max(1024, self._device.sms * 256)
+        return min(rows, max(least, (ceildiv(rows, 8) + 255) // 256 * 256))
+
+    def _stream[
+        output_dtype: DType, mode: Int, cols: Int
+    ](
+        self, x: NDArray[Self.dtype], threshold: Scalar[Self.dtype]
+    ) raises -> NDArray[output_dtype]:
+        """Host rows in, host results out, in overlapped slabs.
+
+        Each slab's upload runs on a load stream, its kernel on the forest's
+        context and its download on a store stream, ordered by events, so
+        the next upload proceeds while earlier slabs compute and download.
+        Two slots of device and pinned host storage alternate; a slot is
+        refilled only after its previous kernel and download completed.
+        Returns after every slab finished.
+        """
+        _check_upload(x)
+        var rows = x.shape[0]
+        var width = x.shape[1]
+        if width != self._features:
+            raise Error("Pyre input feature count does not match the forest")
+        if rows > Int(Int32.MAX):
+            raise Error("Pyre GPU inference supports at most 2147483647 rows")
+        var result: NDArray[output_dtype]
+        comptime if cols == 2:
+            result = NDArray[output_dtype](Shape(rows, 2))
+        else:
+            result = NDArray[output_dtype](Shape(rows))
+        if rows == 0:
+            return result^
+        var slab = self._slab_rows(rows)
+        var slabs = ceildiv(rows, slab)
+        var slots = min(2, slabs)
+        var plan = self.plan(slab)
+        var ctx = self._context.copy()
+        var din = ctx.enqueue_create_buffer[Self.dtype](
+            max(1, slots * slab * width)
+        )
+        var dout = ctx.enqueue_create_buffer[output_dtype](slots * slab * cols)
+        var hout = ctx.enqueue_create_host_buffer[output_dtype](
+            slots * slab * cols
+        )
+        # Copy streams use the storage only after its allocation completed.
+        ctx.synchronize()
+        var leased = self._streams.acquire(ctx)
+        var streams = leased[0].copy()
+        var loaded = [ctx.create_event(), ctx.create_event()]
+        var computed = [ctx.create_event(), ctx.create_event()]
+        var drained = [ctx.create_event(), ctx.create_event()]
+        var source = x.unsafe_ptr()
+        var target = result.unsafe_ptr()
+        var din_ptr = din.unsafe_ptr()
+        var dout_ptr = dout.unsafe_ptr()
+        var hout_ptr = hout.unsafe_ptr()
+
+        def collect(
+            i: Int,
+        ) raises {
+            mut drained, imm hout_ptr, imm target, imm slab, imm rows, imm slots
+        }:
+            # Slab i's download completed into its slot: copy it out.
+            var k = i % slots
+            drained[k].synchronize()
+            var lo = i * slab
+            unsafe_memcpy(
+                dest=target.unsafe_offset(lo * cols),
+                src=hout_ptr.unsafe_offset(k * slab * cols),
+                count=min(slab, rows - lo) * cols,
+            )
+
+        try:
+            with _JoinAll(ctx, streams):
+                for i in range(slabs):
+                    var k = i % slots
+                    var lo = i * slab
+                    var n = min(slab, rows - lo)
+                    var xin = din_ptr.unsafe_offset(k * slab * width)
+                    var yout = dout_ptr.unsafe_offset(k * slab * cols)
+                    if i >= slots:
+                        # The slot's previous kernel must finish reading its
+                        # input, and its result must leave pinned storage.
+                        streams.load.stream().enqueue_wait_for(computed[k])
+                        collect(i - slots)
+                    if n * width > 0:
+                        DeviceBuffer[Self.dtype](
+                            streams.load, xin, n * width, owning=False
+                        ).enqueue_copy_from(source.unsafe_offset(lo * width))
+                    streams.load.stream().record_event(loaded[k])
+                    ctx.stream().enqueue_wait_for(loaded[k])
+                    self._run[output_dtype, mode](
+                        xin.unsafe_origin_cast[MutAnyOrigin]().as_imm(),
+                        n,
+                        yout.unsafe_origin_cast[MutAnyOrigin](),
+                        threshold,
+                        plan,
+                    )
+                    ctx.stream().record_event(computed[k])
+                    streams.store.stream().enqueue_wait_for(computed[k])
+                    DeviceBuffer[output_dtype](
+                        streams.store, yout, n * cols, owning=False
+                    ).enqueue_copy_to(hout_ptr.unsafe_offset(k * slab * cols))
+                    streams.store.stream().record_event(drained[k])
+                for i in range(max(0, slabs - slots), slabs):
+                    collect(i)
+        finally:
+            self._streams.release(leased[1])
+        _ = din^
+        _ = dout^
+        _ = hout^
+        return result^
+
+    def predict_margin(
+        self, x: NDArray[Self.dtype]
+    ) raises -> NDArray[Self.dtype]:
+        """Host-array counterpart of `predict_margin`: uploads, predicts and
+        downloads in overlapped slabs, returning a host array."""
+        return self._stream[Self.dtype, 0, 1](x, 0.5)
+
+    def predict(self, x: NDArray[Self.dtype]) raises -> NDArray[Self.dtype]:
+        if self._classifier:
+            raise Error(
+                "Use predict_class or predict_proba for binary classification"
+            )
+        return self._stream[Self.dtype, 0, 1](x, 0.5)
+
+    def predict_proba(
+        self, x: NDArray[Self.dtype]
+    ) raises -> NDArray[Self.dtype]:
+        if not self._classifier:
+            raise Error("predict_proba requires a binary classifier")
+        return self._stream[Self.dtype, 1, 2](x, 0.5)
+
+    def predict_class(
+        self, x: NDArray[Self.dtype], threshold: Scalar[Self.dtype] = 0.5
+    ) raises -> NDArray[DType.int64]:
+        if not (threshold >= 0 and threshold <= 1):
+            raise Error("Classification threshold must lie in [0, 1]")
+        if not self._classifier:
+            raise Error("predict_class requires a binary classifier")
+        return self._stream[DType.int64, 2, 1](x, threshold)
