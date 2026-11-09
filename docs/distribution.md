@@ -1,73 +1,128 @@
-# Distribution and CI
+# Packaging and release
 
-Pyre 0.1.0 targets Linux x86-64 with Mojo 1.0.0, MAX core 26.5.0, and
-NuMojo 0.10.0. A compiled Mojo package must be consumed with the matching
-compiler. CPU use does not require a GPU; GPU use is validated on RTX 5090.
+Pyre 0.2.0 targets Linux x86-64 with Mojo 1.2.0, MAX core 26.7.0, NuMojo
+0.12.0 and Balsa 0.2.1. A compiled Mojo package must be consumed with the
+matching compiler. CPU use does not require a GPU; GPU use is validated on an
+RTX 5090.
 
-## Release bundle
+## Installing the package
 
-Download `pyre-0.1.0-linux-64.tar.gz` and `SHA256SUMS` from the
-[GitHub release](https://github.com/idlab-discover/pyre/releases/tag/v0.1.0).
-Then, from the download directory:
+The Conda package is **`mojo-pyre`**. The name `pyre` on conda-forge belongs to
+an unrelated project. The Mojo package it installs is imported as `pyre`:
 
-```sh
-sha256sum -c SHA256SUMS
-tar -xzf pyre-0.1.0-linux-64.tar.gz
-cd pyre-0.1.0-linux-64
-pixi install --locked
-pixi run consumer
+```toml
+[workspace]
+channels = ["https://conda.modular.com/max", "conda-forge", "https://repo.prefix.dev/modular-community"]
+platforms = ["linux-64"]
+
+[dependencies]
+mojo-pyre = "==0.2.0"
 ```
 
-The bundle includes `lib/pyre.mojoc` and `lib/balsa.mojoc`, a standalone consumer,
-the dependency lock, notices/licenses, and a manifest of source and library
-hashes. It does not bundle the Mojo/MAX/NuMojo runtime; Pixi installs those
-pinned dependencies. It does not require a sibling Balsa or Pyre source tree.
-This is a GitHub library bundle, not a published Conda-channel package.
-
-For your own program, use this environment and point `-I` at the extracted
-`lib` directory:
+It installs `lib/mojo/pyre.mojoc`, where Mojo discovers it automatically, and
+depends on the matching `balsa`, `numojo`, `max-core` and `mojo-compiler`
+packages. A program then needs no `-I` flags:
 
 ```sh
-pixi run mojo run -I /absolute/path/to/pyre-0.1.0-linux-64/lib /path/to/app.mojo
+pixi run mojo run app.mojo
+pixi run mojo run --target-accelerator=none app.mojo  # explicitly CPU-only
 ```
 
-Use `--target-accelerator=none` for an explicitly CPU-only consumer. The bundled
-`consumer.mojo` builds a small forest in memory and verifies float32/float64
-prediction, so no checkpoint fixtures are needed to verify installation.
-For GPU use, follow the [GPU example](../examples/predict_gpu.mojo) and
+The second command builds an explicitly CPU-only consumer. Under Mojo 1.2,
+NuMojo 0.12's `AcceleratorNDArray` cannot be compiled for that target, so
+`pyre.accelerator` needs a build with an accelerator target. `Forest` with
+`NDArray` does not. For GPU use, follow the
+[GPU example](../examples/predict_gpu.mojo) and the
 [storage/lifetime contracts](usage.md#native-gpu-inference).
 
-## Balsa compatibility
+Do not advertise `mojo-pyre` as installable until it has been published to
+modular-community. A local package, CI artifact or GitHub release does not make
+it available from a public Conda channel.
 
-Pyre 0.1.0 uses Balsa's editable `Model` API at immutable revision
-`737874f3eae9d95a0517397130f445b303d28cc6`. The bundled Balsa is deliberately
-pinned to that API; do not replace it with Balsa 0.2's packed-default loader.
-Balsa owns file loading; Pyre validates supported inference semantics at
-construction. There is no implicit precision conversion or device migration.
+## Build and validate
 
-Source builds run `tools/prepare_balsa.py`, which fetches the exact revision
-from the public Git repository. An existing matching snapshot is reused.
-For offline preparation, pass `--repository /path/to/balsa` to that script;
-the repository must contain the pinned commit. No working-tree files are read.
-
-## Build and verification
+Use the checked-in lockfile and Pixi 0.80.0, matching CI:
 
 ```sh
-pixi install --locked
-pixi run check
-pixi run test-gpu  # On a supported GPU host
-pixi run release
+pixi install --locked -e default -e packaging
+pixi run --locked check
+pixi run --locked test-gpu   # on a supported GPU host
+pixi run --locked -e packaging conda-build
 ```
 
-`package` builds both libraries. `test-consumer` copies only those packages
-and a consumer to a temporary directory outside the repository, then compiles
-and executes without source include paths. `release` repeats that check and
-creates the bundle and checksums under `build/release/`.
+Until Balsa 0.2.1 is available from modular-community, build its package first
+and pass it as an extra channel:
 
-GitHub Actions follows Balsa's pinned-action, locked-environment setup. CPU
-checks run on Ubuntu for main/feature/release branches, pull requests, and tags.
-CI also builds the release bundle, installs its lock in an isolated directory,
-and runs its consumer. A version tag publishes the checked bundle and notes
-as a GitHub release after those checks pass. The tag must match the manifest
-version. GPU execution is checked locally on a supported GPU; hosted CPU CI
-makes no GPU-validation claim.
+```sh
+(cd ../balsa && pixi run --locked -e packaging conda-build)
+PYRE_EXTRA_CHANNEL="-c file://$(realpath ../balsa/build/conda)" \
+  pixi run --locked -e packaging conda-build
+```
+
+Source builds run `tools/prepare_balsa.py`, which fetches the pinned Balsa
+revision into `build/balsa-reference`, the same revision the `balsa ==0.2.1`
+package is built from. For offline preparation, pass
+`--repository /path/to/balsa`; the repository must contain the pinned commit.
+Balsa 0.2 loads packed models by default. Pyre takes an editable `Model`, so it
+loads with `load_editable`, `load_auto_editable` or `decode_editable`.
+
+`test-consumer` copies only the precompiled packages and
+`examples/consumer.mojo` to a temporary directory and compiles a CPU-only
+consumer with no source include path. The Conda recipe runs the same consumer
+against the installed `mojo-pyre`, `balsa` and `numojo` packages. Build outputs
+are under `build/conda/linux-64/`.
+
+## Versions and build numbers
+
+A Conda artifact is identified by name, version and build string. This recipe
+has no variant keys, so the build string is always `hb0f4dca_<build number>`
+and the build number alone separates artifacts of one version. The
+modular-community CI builds with `--skip-existing=all`: an unchanged
+name/version/build is skipped, not rebuilt.
+
+- New source, a new compiler pin or a new dependency pin: new library version
+  and tag, build number 0.
+- Same tagged source, recipe-only fix (metadata, tests, license files):
+  same version, build number + 1.
+
+## Release sequence
+
+1. Balsa first: `mojo-pyre` resolves `balsa` from the live community channel,
+   so Balsa's recipe must be merged and uploaded before Pyre's PR can build.
+2. Merge the release commit to `main` after both GitHub CI jobs pass. The
+   workspace and recipe versions must equal the release version, with build 0.
+   `tools/prepare_balsa.py` must pin the commit of Balsa's release tag.
+3. Tag that merge commit with an annotated `v<version>` tag and push the tag.
+   The Release workflow checks that the tag is on `main` and matches the
+   versions, build number 0 and `docs/release-<version>.md`. It runs the full
+   CI, checks the artifact's `SOURCE_COMMIT` and `SHA256SUMS`, and creates a
+   draft GitHub release with the notes, `.conda` file, checksum file and
+   source-commit record.
+4. Review the draft release and publish it.
+5. Add `recipes/mojo-pyre/recipe.yaml` in a fork of `modular/modular-community`.
+   Replace `source.path`/`source.filter` with the Git repository and the tag's
+   full commit as `rev`. Run the **Validate community recipe** workflow (manual
+   dispatch) with the fork and commit. Fill in `balsa-ref` only while Balsa is
+   not yet published. The workflow builds the exact recipe with upstream's
+   Rattler-Build version, variants and channel order and installs it into a
+   clean workspace. Then open the PR with the upstream checklist. The package
+   reaches `modular-community` only after a maintainer merges it and the upload
+   job runs.
+
+Do not move an existing release tag.
+
+## CI behavior
+
+CI runs on branch pushes, pull requests and manual dispatch. CPU tests run on
+Ubuntu in three groups. The package job builds the example, runs the Python
+tooling tests and the packaged consumer, and builds the Conda package. Until
+Balsa is published, it first builds the pinned Balsa revision's own recipe into
+a local channel. It uploads the Conda artifact with SHA256 checksums and the
+exact checkout commit. Actions are pinned and environments locked, and the
+repository permission is read-only. GPU execution is checked locally on a
+supported GPU; hosted CI makes no GPU-validation claim.
+
+`v*` tag pushes run the Release workflow instead. It calls CI and releases the
+artifact that CI tested. Only its draft-release job has write permission. It
+does not publish the release, overwrite an existing one, or upload to a Conda
+channel.

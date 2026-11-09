@@ -9,17 +9,16 @@ packed-node representation.
 
 Reference: <https://github.com/rapidsai/nvforest>.
 
-Balsa is fetched from `https://github.com/idlab-discover/balsa.git` into
-`build/balsa-reference` and compiled against the immutable commit
-`737874f3eae9d95a0517397130f445b303d28cc6`. Its model fields implement the Treelite v4 format. Refer to Balsa's
-[notices](LICENSES/Balsa-NOTICES.md) for its upstream attribution.
-The release bundles this pinned Balsa library; its Apache-2.0 license
-(added upstream at `ccd68c68c15e26fa41cddc4cb8b90a0a028a5eb0`) and Treelite
-attribution are retained under `LICENSES/`. Checkpoint fixtures are owned by Balsa. Pyre records Treelite 4.6.1 prediction
-expectations and source hashes without duplicating checkpoint files.
+Balsa (Apache-2.0) is a runtime dependency, installed as the `balsa` Conda
+package. Its model fields implement the Treelite v4 format; the Balsa package
+carries its own license and Treelite attribution. Source builds fetch the same
+pinned Balsa revision from `https://github.com/idlab-discover/balsa.git` into
+`build/balsa-reference`. Checkpoint fixtures are owned by Balsa. Pyre records
+Treelite 4.6.1 prediction expectations and source hashes without duplicating
+checkpoint files.
 
-NuMojo 0.10.0 is a dependency, licensed Apache-2.0 with LLVM Exceptions.
+NuMojo 0.12.0 is a dependency, licensed Apache-2.0 with LLVM Exceptions.
 Reference: <https://github.com/Mojo-Numerics-and-Algorithms-group/NuMojo>.
 Pyre's accelerator adapter accesses NuMojo storage internals through borrowing
-accessors to avoid the copied-storage pointer issue observed in that version.
+accessors to avoid the copied-storage pointer issue observed in NuMojo 0.10.0.
 NuMojo and Balsa source checkouts were not modified.

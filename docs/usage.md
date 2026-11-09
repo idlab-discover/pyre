@@ -5,14 +5,14 @@ See the [README](../README.md) for installation and a quick start.
 ## Balsa owns loading; Pyre owns inference
 
 ```mojo
-from balsa import load
+from balsa import load_editable
 from pyre import Forest
 from numojo import NDArray
 from numojo.core.type_aliases import Shape
 
 
 def main() raises:
-    var forest = Forest(load("build/balsa-reference/tests/fixtures/float32_op2_missing0.tl"))
+    var forest = Forest(load_editable("build/balsa-reference/tests/fixtures/float32_op2_missing0.tl"))
     var x = NDArray[DType.float32](Shape(3, 1))
     x.itemset(0, 0.0)
     x.itemset(1, 0.5)
@@ -42,8 +42,8 @@ the model precision. NaNs follow the original missing direction. See
 and the deliberately deferred concurrency work.
 
 Use Balsa's `ModelBuilder`/`TreeBuilder` for in-memory construction and
-`load[DType.float64]` for known double precision. For unknown precision, use
-Balsa's `load_auto`, inspect the returned variant once, then transfer its selected
+`load_editable[DType.float64]` for known double precision. For unknown precision, use
+Balsa's `load_auto_editable`, inspect the returned variant once, then transfer its selected
 model using `variant^.unwrap[Model[dtype]]()`. The [runnable example](../examples/predict.mojo)
 shows this dispatch without copying. Pyre has no separate loader or precision
 wrapper.
@@ -136,7 +136,7 @@ A per-call limit does not reserve cores or resize the pool; simultaneous calls
 share its resources. Set process affinity before
 runtime initialization to constrain available CPUs. Pyre initializes the runtime
 before parallel execution, including when used from a non-Mojo host. The existing
-`max-core==26.5.0` dependency supplies `max.algorithm`; no Python model-serving
+`max-core==26.7.0` dependency supplies `max.algorithm`; no Python model-serving
 package is required.
 
 ```mojo
@@ -292,7 +292,9 @@ There is no GPU-to-CPU inference fallback. Rejection tests need no GPU;
 
 The transfer adapter borrows optional storage with `value()` to avoid the copied
 storage/pointer issue observed in NuMojo 0.10.0. It accesses pinned NuMojo internals
-and must be revalidated on upgrades. Accelerator views and CuPy interchange are
+and must be revalidated on upgrades. Under Mojo 1.2, NuMojo 0.12's
+`AcceleratorNDArray` cannot be compiled with `--target-accelerator=none`, so this
+adapter needs a build with an accelerator target; `Forest` with `NDArray` does not. Accelerator views and CuPy interchange are
 not supported. No Balsa or NuMojo source was patched.
 
 ## Verification
@@ -311,13 +313,13 @@ both precisions, mixed operators in later nodes/trees, ties, NaNs and uneven
 depths. `pixi run test-specialization` runs this focused suite.
 
 Additional tests use Balsa builders and text accessors, transfer both model
-precisions from `load_auto`, and cover all operators/default directions, empty
+precisions from `load_auto_editable`, and cover all operators/default directions, empty
 and partial batches, offset/strided views, ownership, malformed models and ties.
 Python is only used by `pixi run oracle-generate` to regenerate expected outputs
 from Balsa's checkpoints. Pyre neither copies nor regenerates those checkpoints.
 `tests/fixtures/manifest.json` records source hashes, original oracle-generation
-revision and tolerances. All twelve fixture hashes match the pinned `737874f`
-snapshot; the stored reference predictions remain valid.
+revision and tolerances. All twelve fixture hashes match the original `737874f`
+snapshot and the pinned Balsa 0.2.1 revision; the stored reference predictions remain valid.
 
 See [responsibilities](responsibilities.md) and
 [upstream notices](../THIRD_PARTY_NOTICES.md).

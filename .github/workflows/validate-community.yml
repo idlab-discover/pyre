@@ -1,0 +1,96 @@
+name: Validate community recipe
+
+# Builds recipes/mojo-pyre from a modular-community fork the way upstream CI
+# does (rattler-build 0.30.x, upstream variants and channel order), then
+# installs the result into a clean workspace and compiles a CPU-only consumer.
+# Nothing is published.
+on:
+  workflow_dispatch:
+    inputs:
+      community-repository:
+        description: modular-community fork that holds the recipe
+        default: Str-Gen/modular-community
+        required: true
+      community-ref:
+        description: Full commit SHA of the recipe in that fork
+        required: true
+      balsa-ref:
+        description: Balsa commit to build into a local channel (only while Balsa is not yet published)
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  recipe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: pyre
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ inputs.community-repository }}
+          ref: ${{ inputs.community-ref }}
+          path: community
+      - uses: prefix-dev/setup-pixi@d3f436a425481402e6a95a1d1fc10331c708cd9e # v0.10.2
+        with:
+          pixi-version: v0.80.0
+          run-install: false
+      - name: Build unpublished Balsa into a local channel
+        if: inputs.balsa-ref != ''
+        shell: bash
+        env:
+          BALSA_REF: ${{ inputs.balsa-ref }}
+        run: |
+          set -euo pipefail
+          git init -q "$RUNNER_TEMP/balsa"
+          git -C "$RUNNER_TEMP/balsa" fetch -q --depth=1 https://github.com/idlab-discover/balsa.git "$BALSA_REF"
+          git -C "$RUNNER_TEMP/balsa" checkout -q FETCH_HEAD
+          pixi run --manifest-path "$RUNNER_TEMP/balsa/pixi.toml" --locked -e packaging conda-build
+          echo "EXTRA_CHANNEL=file://$RUNNER_TEMP/balsa/build/conda" >> "$GITHUB_ENV"
+      - name: Build exact recipe with upstream rattler-build, variants and channel order
+        working-directory: community
+        shell: bash
+        run: |
+          extra=()
+          [ -n "${EXTRA_CHANNEL:-}" ] && extra=(--channel "$EXTRA_CHANNEL")
+          pixi exec --spec "rattler-build>=0.30.0,<0.31" -- rattler-build build \
+            --channel conda-forge \
+            --channel https://conda.modular.com/max \
+            --channel https://prefix.dev/modular-community \
+            "${extra[@]}" \
+            --variant-config variants/variants.yaml \
+            --output-dir output \
+            --recipe recipes/mojo-pyre/recipe.yaml
+      - name: Install from local output and declared channels in a clean workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(grep -E '^  version: "' community/recipes/mojo-pyre/recipe.yaml | cut -d'"' -f2)"
+          channels="\"file://$PWD/community/output\""
+          [ -n "${EXTRA_CHANNEL:-}" ] && channels="$channels, \"$EXTRA_CHANNEL\""
+          install_dir=$(mktemp -d)
+          cat > "$install_dir/pixi.toml" <<TOML
+          [workspace]
+          name = "pyre-installed-consumer"
+          channels = [$channels, "conda-forge", "https://conda.modular.com/max", "https://prefix.dev/modular-community"]
+          channel-priority = "strict"
+          platforms = ["linux-64"]
+          [dependencies]
+          mojo-pyre = "==$version"
+          gcc_linux-64 = "*"
+          TOML
+          cp pyre/examples/consumer.mojo "$install_dir/consumer.mojo"
+          cd "$install_dir"
+          pixi install
+          pixi list
+          pixi run mojo --version
+          pixi run mojo run --target-accelerator=none consumer.mojo
+          cp pixi.lock "$GITHUB_WORKSPACE/community/output/isolated-consumer.lock"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: community-recipe-linux-64
+          path: community/output

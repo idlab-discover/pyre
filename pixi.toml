@@ -3,7 +3,7 @@ authors = ["Str-Gen <20303842+Str-Gen@users.noreply.github.com>"]
 channels = ["https://conda.modular.com/max", "conda-forge", "https://repo.prefix.dev/modular-community"]
 name = "pyre"
 platforms = ["linux-64"]
-version = "0.1.0"
+version = "0.2.0"
 
 [tasks]
 prepare = "python tools/prepare_balsa.py"
@@ -12,7 +12,6 @@ build = { cmd = "mojo build -I src -I build/balsa-reference/src examples/predict
 package-balsa = { cmd = "mojo precompile build/balsa-reference/src/balsa -o build/balsa.mojoc", depends-on = ["prepare"] }
 package = { cmd = "mojo precompile -I build/balsa-reference/src src/pyre -o build/pyre.mojoc", depends-on = ["package-balsa"] }
 test-consumer = { cmd = "python tools/check_consumer.py", depends-on = ["package"] }
-release = { cmd = "python tools/build_release.py", depends-on = ["test-consumer"] }
 test = { cmd = "mojo run -I src -I build/balsa-reference/src -I tests tests/test_forest.mojo", depends-on = ["prepare"] }
 test-cpu-only = { cmd = "mojo run --target-accelerator=none -D PYRE_CPU_ONLY -I src -I build/balsa-reference/src -I tests tests/test_forest.mojo", depends-on = ["prepare"] }
 model-memory-build = { cmd = "mojo build -I src -I build/balsa-reference/src tools/model_memory_worker.mojo -o build/model-memory-worker", depends-on = ["prepare"] }
@@ -46,3 +45,14 @@ max-core = "==26.7.0"
 numojo = "==0.12.0"
 python = ">=3.12,<3.14"
 pyperf = ">=2.9,<3"
+
+[feature.packaging.dependencies]
+rattler-build = "==0.76.1"
+
+[feature.packaging.tasks]
+# PYRE_EXTRA_CHANNEL supplies Balsa until it is available from modular-community.
+conda-build = "rattler-build build --recipe conda.recipe/recipe.yaml --output-dir build/conda -c https://conda.modular.com/max -c conda-forge -c https://repo.prefix.dev/modular-community $PYRE_EXTRA_CHANNEL"
+
+[environments]
+default = { features = [], solve-group = "default" }
+packaging = { features = ["packaging"], solve-group = "default" }

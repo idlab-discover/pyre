@@ -17,8 +17,8 @@ without Python or libtreelite in the inference runtime.
 ## Get started
 
 Requires Linux x86-64, [Pixi](https://pixi.sh), Git, and a C linker such as GCC.
-The locked environment provides Mojo **1.0.0**, MAX core **26.5.0**, and NuMojo
-**0.10.0**. Preparation fetches a pinned Balsa revision automatically.
+The locked environment provides Mojo **1.2.0**, MAX core **26.7.0**, and NuMojo
+**0.12.0**. Preparation fetches the pinned Balsa 0.2.1 revision automatically.
 
 ```sh
 git clone https://github.com/idlab-discover/pyre.git
@@ -29,14 +29,14 @@ pixi run run
 ```
 
 ```mojo
-from balsa import load
+from balsa import load_editable
 from pyre import Forest
 from numojo import NDArray
 from numojo.core.type_aliases import Shape
 
 
 def main() raises:
-    var forest = Forest(load("build/balsa-reference/tests/fixtures/float32_op2_missing0.tl"))
+    var forest = Forest(load_editable("build/balsa-reference/tests/fixtures/float32_op2_missing0.tl"))
     var x = NDArray[DType.float32](Shape(3, 1))
     x.itemset(0, 0.0)
     x.itemset(1, 0.5)
@@ -46,7 +46,8 @@ def main() raises:
 
 Save as `app.mojo` in the repository root and run
 `pixi run mojo run -I src -I build/balsa-reference/src app.mojo`.
-For use from another project, see the [precompiled release bundle](docs/distribution.md).
+For use from another project, see [packaging and release](docs/distribution.md):
+the Conda package is `mojo-pyre`, imported as `pyre`.
 
 ## API and defaults
 
@@ -107,11 +108,11 @@ See [third-party notices](THIRD_PARTY_NOTICES.md) for dependency attribution.
 ```sh
 pixi run check       # CPU correctness, package, and isolated consumer
 pixi run test-gpu    # Requires a supported GPU
-pixi run release    # Versioned library bundle and checksums
+pixi run -e packaging conda-build  # Conda package with isolated install test
 ```
 
 - [User guide](docs/usage.md): ownership, supported semantics, threading, and GPU buffers.
-- [Distribution and CI](docs/distribution.md): pinned dependencies and release consumption.
+- [Packaging and release](docs/distribution.md): Conda package, CI and release sequence.
 - [CPU planning](docs/cpu-planning.md) and [symmetric inference](docs/cpu-symmetric.md).
 - [GPU benchmarking](docs/gpu-benchmarking.md) and [third-party notices](THIRD_PARTY_NOTICES.md).
 
