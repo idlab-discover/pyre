@@ -4,7 +4,7 @@ Native Mojo CPU and GPU inference for Balsa tree ensembles. Target: Linux
 x86-64, Mojo/compiler 1.2.0, MAX core 26.7.0, NuMojo 0.12.0 and Balsa 0.2.1.
 This is the first Pyre release distributed as a Conda package, `mojo-pyre`
 (the conda-forge name `pyre` belongs to an unrelated project). It is still
-imported as `pyre`.
+imported as `pyre`. See the [Pixi installation instructions](https://github.com/idlab-discover/pyre/blob/v0.2.0/docs/distribution.md#installing-the-package).
 
 ## Distribution
 
@@ -24,14 +24,14 @@ increment is reserved for recipe-only rebuilds of the same source.
   depth-first nodes with overlapped tree walks. Balsa's model is released after
   CPU packing.
 - **CPU scheduling.** Tasks are sized by estimated work, and symmetric paths now
-  run in parallel. See [CPU planning](cpu-planning.md) and
-  [symmetric inference](cpu-symmetric.md).
+  run in parallel. See [CPU planning](https://github.com/idlab-discover/pyre/blob/v0.2.0/docs/cpu-planning.md) and
+  [symmetric inference](https://github.com/idlab-discover/pyre/blob/v0.2.0/docs/cpu-symmetric.md).
 - **GPU kernel.** Each thread walks several (row, tree) chains, rows are staged
   transposed in shared memory for both precisions, and node indices are 32-bit.
   Launch plans come from device attributes. `tune(batch)` measures candidates
   on real rows, and `use_plan` pins one. NDArray inputs pipeline uploads,
   compute and downloads across copy streams. Measurements are in
-  [GPU kernel results](benchmarks/gpu-kernel.md).
+  [GPU kernel results](https://github.com/idlab-discover/pyre/blob/v0.2.0/docs/benchmarks/gpu-kernel.md).
 - **Benchmarking.** The CPU and GPU comparison runner checks predictions against GTIL and supports configurable model families, batch sizes and worker settings.
 - **Mojo 1.2.0.** GPU primitives and the async runtime moved under `max.*`,
   `InlineArray` became `Array`, and `parallelism_level` takes an optional

@@ -8,15 +8,17 @@ RTX 5090.
 ## Installing the package
 
 The Conda package is **`mojo-pyre`**. The name `pyre` on conda-forge belongs to
-an unrelated project. The Mojo package it installs is imported as `pyre`:
+an unrelated project. Use the GitHub release asset directly in a Linux x86-64 Pixi workspace. Pixi resolves Balsa and NuMojo from modular-community.
 
 ```toml
 [workspace]
+name = "pyre-example"
 channels = ["https://conda.modular.com/max", "conda-forge", "https://repo.prefix.dev/modular-community"]
 platforms = ["linux-64"]
 
 [dependencies]
-mojo-pyre = "==0.2.0"
+mojo-pyre = { url = "https://github.com/idlab-discover/pyre/releases/download/v0.2.0/mojo-pyre-0.2.0-hb0f4dca_0.conda" }
+gcc_linux-64 = "*"
 ```
 
 It installs `lib/mojo/pyre.mojoc`, where Mojo discovers it automatically, and
@@ -34,10 +36,6 @@ NuMojo 0.12's `AcceleratorNDArray` cannot be compiled for that target, so
 `NDArray` does not. For GPU use, follow the
 [GPU example](../examples/predict_gpu.mojo) and the
 [storage/lifetime contracts](usage.md#native-gpu-inference).
-
-Do not advertise `mojo-pyre` as installable until it has been published to
-modular-community. A local package, CI artifact or GitHub release does not make
-it available from a public Conda channel.
 
 ## Build and validate
 
@@ -89,7 +87,7 @@ name/version/build is skipped, not rebuilt.
    draft GitHub release with the notes, `.conda` file, checksum file and
    source-commit record.
 4. Review the draft release and publish it.
-5. Add `recipes/mojo-pyre/recipe.yaml` in a fork of `modular/modular-community`.
+For a future community-channel submission, add `recipes/mojo-pyre/recipe.yaml` in a fork of `modular/modular-community`.
    Replace `source.path`/`source.filter` with the Git repository and the tag's
    full commit as `rev`. Run the **Validate community recipe** workflow (manual
    dispatch) with the fork and commit. The workflow builds the exact recipe with upstream's
