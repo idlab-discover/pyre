@@ -10,11 +10,12 @@ Compact nodes are two 32-bit words, `[threshold, meta]`, with 16 offset bits
 and 13 feature bits in `meta`. Wide nodes are four words,
 `[threshold (one or two words), meta, offset]`, with 29 feature bits in `meta`.
 Both encodings place the operator in bits 29-30 and the default-distant flag in
-bit 31 of `meta`. Keyed float64 thresholds hold `float64_key` integers instead
+bit 31 of `meta`. Keyed float64 thresholds hold `order_key` integers instead
 of IEEE values, for GPU integer comparison; leaves always hold values.
 """
 from balsa import Model, NodeType, Operator
 from std.math import inf, nextafter
+from std.sys import has_apple_gpu_accelerator
 from std.memory import bitcast
 
 comptime OP_LT = UInt32(0)
@@ -26,17 +27,18 @@ comptime COMPACT_FEATURE_BITS = 13
 comptime WIDE_FEATURE_BITS = 29
 
 
-def float64_key(value: Float64) -> Int64:
-    """Order-preserving integer key: sign-magnitude to two's complement.
+comptime KeyType[dtype: DType] = DType.int64 if dtype == DType.float64 else DType.int32
 
-    For non-NaN values, keys compare exactly as IEEE values do, including
-    -0 == +0. A NaN threshold maps to Int64.MIN, which no input key reaches,
-    so every comparison against it is false, as in IEEE.
-    """
-    var bits = bitcast[DType.int64, 1](value)
-    var magnitude = bits & Int64.MAX
-    if magnitude > Int64(0x7FF0000000000000):
-        return Int64.MIN
+
+@always_inline
+def order_key[dtype: DType](value: Scalar[dtype]) -> Scalar[KeyType[dtype]]:
+    """Ordered IEEE key. NaNs map to MIN, and both signed zeros map to zero."""
+    comptime K = KeyType[dtype]
+    comptime exponent = 0x7FF0000000000000 if dtype == DType.float64 else 0x7F800000
+    var bits = bitcast[K, 1](value)
+    var magnitude = bits & Scalar[K].MAX
+    if magnitude > Scalar[K](exponent):
+        return Scalar[K].MIN
     return -magnitude if bits < 0 else magnitude
 
 
@@ -161,6 +163,9 @@ def pack[
             var at = words * position
             comptime if dtype == DType.float32:
                 nodes[unsafe_offset=at] = bitcast[DType.uint32, 1](value)
+                comptime if keyed and has_apple_gpu_accelerator():
+                    if tree.node_type[n] != NodeType.LEAF:
+                        nodes[unsafe_offset=at] = bitcast[DType.uint32, 1](order_key(value))
                 if words == 4:
                     nodes[unsafe_offset=at + 1] = 0
             else:
@@ -168,7 +173,7 @@ def pack[
                 comptime if keyed:
                     if tree.node_type[n] != NodeType.LEAF:
                         bits = bitcast[DType.uint64, 1](
-                            float64_key(Float64(value))
+                            order_key(value)
                         )
                 var halves = bitcast[DType.uint32, 2](bits)
                 nodes[unsafe_offset=at] = halves[0]

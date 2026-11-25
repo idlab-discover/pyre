@@ -23,9 +23,12 @@ from max.gpu.memory import external_memory, AddressSpace
 from max.gpu.primitives import warp
 from std.math import isnan, exp
 from std.memory import bitcast
+from std.sys import has_apple_gpu_accelerator
 from std.bit import log2_floor
 
 from ._layout import (
+    order_key,
+    KeyType,
     OP_LT,
     OP_LE,
     OP_EQ,
@@ -65,23 +68,9 @@ def warp_sum[dtype: DType](value: Scalar[dtype]) -> Scalar[dtype]:
         return warp.sum(value)
 
 
-@always_inline
-def input_key(value: Float64) -> Int64:
-    """Order-preserving key of an input; NaN maps to the Int64.MIN sentinel.
-
-    Non-NaN keys are never Int64.MIN, and a NaN threshold key is Int64.MIN, so
-    `key < threshold` is false for it as in IEEE. Callers test the sentinel.
-    """
-    var bits = bitcast[DType.int64, 1](value)
-    var magnitude = bits & Int64.MAX
-    if magnitude > Int64(0x7FF0000000000000):
-        return Int64.MIN
-    return -magnitude if bits < 0 else magnitude
-
-
 def stage_type[dtype: DType]() -> DType:
     """Staged element type: float64 inputs are staged as comparison keys."""
-    return DType.int64 if dtype == DType.float64 else dtype
+    return KeyType[dtype] if dtype == DType.float64 or has_apple_gpu_accelerator() else dtype
 
 
 @always_inline
@@ -117,18 +106,15 @@ def split[
     if offset == 0:
         return 0
     var condition: Bool
-    comptime if dtype == DType.float64:
-        # FP64 compare throughput is low on consumer GPUs; compare
-        # order-preserving integer keys instead (see `float64_key`).
-        var key: Int64
+    comptime if stage_type[dtype]() != dtype:
+        comptime K = KeyType[dtype]
+        var key: Scalar[K]
         comptime if staged:
-            key = rebind[Int64](stage[unsafe_offset=Int(feature) * stride])
+            key = rebind[Scalar[K]](stage[unsafe_offset=Int(feature) * stride])
         else:
-            key = input_key(Float64(row[unsafe_offset=Int(feature)]))
-        var missing = key == Int64.MIN
-        var threshold = bitcast[DType.int64, 1](
-            SIMD[DType.uint32, 2](node[0], node[1])
-        )
+            key = order_key(row[unsafe_offset=Int(feature)])
+        var missing = key == Scalar[K].MIN
+        var threshold = bitcast[K, 1](node_value[dtype, words](node))
         comptime if general:
             var op = (meta >> 29) & 3
             condition = (
@@ -233,7 +219,8 @@ def predict_kernel[
     features: Int32,
     chunk_shift: Int32,
     average: Int32,
-    bias: Float64,
+    bias: Scalar[dtype],
+    bias_low: Scalar[dtype],
     alpha: Float32,
     threshold: Scalar[dtype],
 ):
@@ -270,9 +257,9 @@ def predict_kernel[
             var r = i // width
             var f = i - r * width
             var v = block_x[unsafe_offset=i]
-            comptime if dtype == DType.float64:
+            comptime if S != dtype:
                 stage[unsafe_offset=f * stride + r] = rebind[Scalar[S]](
-                    input_key(Float64(v))
+                    order_key(v)
                 )
             else:
                 stage[unsafe_offset=f * stride + r] = rebind[Scalar[S]](v)
@@ -316,7 +303,7 @@ def predict_kernel[
             for g in range(1, groves):
                 sum += partial[unsafe_offset=g * chunk + r]
             finish[mode](
-                y, first + r, sum, trees, average, bias, alpha, threshold
+                y, first + r, sum, trees, average, bias, bias_low, alpha, threshold
             )
     else:
         var warp_lane = lane_id()
@@ -327,7 +314,7 @@ def predict_kernel[
             sum = warp_sum(sum)
             if warp_lane == 0:
                 finish[mode](
-                    y, first + r, sum, trees, average, bias, alpha, threshold
+                    y, first + r, sum, trees, average, bias, bias_low, alpha, threshold
                 )
 
 
@@ -340,16 +327,29 @@ def finish[
     total: Scalar[dtype],
     trees: Int32,
     average: Int32,
-    bias: Float64,
+    bias: Scalar[dtype],
+    bias_low: Scalar[dtype],
     alpha: Float32,
     threshold: Scalar[dtype],
 ):
-    """Average, add the base score, apply the output transform and store."""
+    """Average, add the base score, apply the output transform and store.
+
+    The Float64 base score arrives split as `bias + bias_low`. Float32 kernels
+    add it with an error-free two-sum, so no FP64 instruction is emitted (Apple
+    GPUs have none) while the result stays within one ulp of the Float64 add.
+    """
     comptime assert dtype.is_floating_point()
     var sum = total
     if average:
         sum /= Scalar[dtype](Int(trees))
-    var value = Scalar[dtype](Float64(sum) + bias)
+    var value: Scalar[dtype]
+    comptime if dtype == DType.float64:
+        value = sum + bias
+    else:
+        var high = sum + bias
+        var part = high - sum
+        var error = (sum - (high - part)) + (bias - part)
+        value = high + (error + bias_low)
     comptime if mode != 0:
         var z = Scalar[dtype](alpha) * value
         var e = exp(-abs(z))

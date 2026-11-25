@@ -9,7 +9,7 @@ from max.gpu.host import (
 from std.memory import unsafe_memcpy
 from std.bit import next_power_of_two
 from std.math import ceildiv, inf
-from std.sys import size_of
+from std.sys import size_of, has_apple_gpu_accelerator
 from std.time import perf_counter_ns
 from numojo import NDArray
 from numojo.core.type_aliases import Shape
@@ -35,6 +35,16 @@ comptime _SHAPES = [(1, 1), (2, 1), (4, 1), (1, 2), (1, 4), (2, 2)]
 # Largest rows per block, as a shift.
 comptime _MAX_SHIFT = 8
 comptime _MAX_THREADS = 1024
+
+comptime _FP64_ERROR = (
+    "Pyre GPU float64 inference requires FP64 device support; Apple GPUs have"
+    " none. Use float32 or the CPU Forest"
+)
+
+
+def _has_fp64() -> Bool:
+    """Whether the compiled GPU target can run float64 kernels."""
+    return not has_apple_gpu_accelerator()
 
 
 @fieldwise_init
@@ -129,7 +139,8 @@ struct GpuForest[dtype: DType = DType.float32](Movable):
     var _trees: Int
     var _classifier: Bool
     var _average: Int32
-    var _bias: Float64
+    var _bias: Scalar[Self.dtype]
+    var _bias_low: Scalar[Self.dtype]
     var _alpha: Float32
     var _device: _Device
     var _depth: Float64
@@ -138,6 +149,9 @@ struct GpuForest[dtype: DType = DType.float32](Movable):
 
     def __init__(out self, model: Model[Self.dtype], ctx: DeviceContext) raises:
         _gpu(ctx)
+        comptime if Self.dtype == DType.float64:
+            if not _has_fp64() or ctx.api() == "metal":
+                raise Error(_FP64_ERROR)
         _ = validate_inference(model)
         var words = node_words(model)
         var count = node_count(model)
@@ -164,7 +178,10 @@ struct GpuForest[dtype: DType = DType.float32](Movable):
         self._trees = trees
         self._classifier = model.task_type == TaskType.BINARY_CLF
         self._average = Int32(model.average_tree_output != 0)
-        self._bias = model.base_scores[0]
+        # Split the Float64 base score so float32 kernels need no FP64.
+        var bias = model.base_scores[0]
+        self._bias = Scalar[Self.dtype](bias)
+        self._bias_low = Scalar[Self.dtype](bias - Float64(self._bias))
         self._alpha = model.sigmoid_alpha
         self._device = _Device.query(ctx)
         self._depth = path_length(model) / Float64(max(trees, 1))
@@ -594,6 +611,9 @@ struct GpuForest[dtype: DType = DType.float32](Movable):
     ) raises:
         comptime if Self.dtype == DType.float64 and words == 2:
             raise Error("Pyre GPU float64 nodes require the wide layout")
+        elif Self.dtype == DType.float64 and not _has_fp64():
+            # Never instantiate FP64 kernels for a target that cannot run them.
+            raise Error(_FP64_ERROR)
         else:
             if self._general:
                 if plan.staged:
@@ -678,6 +698,7 @@ struct GpuForest[dtype: DType = DType.float32](Movable):
                 Int32(plan.chunk_shift),
                 self._average,
                 self._bias,
+                self._bias_low,
                 self._alpha,
                 threshold,
                 grid_dim=grid,
@@ -697,6 +718,7 @@ struct GpuForest[dtype: DType = DType.float32](Movable):
                 Int32(plan.chunk_shift),
                 self._average,
                 self._bias,
+                self._bias_low,
                 self._alpha,
                 threshold,
                 grid_dim=grid,
