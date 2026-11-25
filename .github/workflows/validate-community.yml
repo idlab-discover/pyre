@@ -14,9 +14,6 @@ on:
       community-ref:
         description: Full commit SHA of the recipe in that fork
         required: true
-      balsa-ref:
-        description: Balsa commit to build into a local channel (only while Balsa is not yet published)
-        required: false
 
 permissions:
   contents: read
@@ -38,29 +35,14 @@ jobs:
         with:
           pixi-version: v0.80.0
           run-install: false
-      - name: Build unpublished Balsa into a local channel
-        if: inputs.balsa-ref != ''
-        shell: bash
-        env:
-          BALSA_REF: ${{ inputs.balsa-ref }}
-        run: |
-          set -euo pipefail
-          git init -q "$RUNNER_TEMP/balsa"
-          git -C "$RUNNER_TEMP/balsa" fetch -q --depth=1 https://github.com/idlab-discover/balsa.git "$BALSA_REF"
-          git -C "$RUNNER_TEMP/balsa" checkout -q FETCH_HEAD
-          pixi run --manifest-path "$RUNNER_TEMP/balsa/pixi.toml" --locked -e packaging conda-build
-          echo "EXTRA_CHANNEL=file://$RUNNER_TEMP/balsa/build/conda" >> "$GITHUB_ENV"
       - name: Build exact recipe with upstream rattler-build, variants and channel order
         working-directory: community
         shell: bash
         run: |
-          extra=()
-          [ -n "${EXTRA_CHANNEL:-}" ] && extra=(--channel "$EXTRA_CHANNEL")
           pixi exec --spec "rattler-build>=0.30.0,<0.31" -- rattler-build build \
             --channel conda-forge \
             --channel https://conda.modular.com/max \
             --channel https://prefix.dev/modular-community \
-            "${extra[@]}" \
             --variant-config variants/variants.yaml \
             --output-dir output \
             --recipe recipes/mojo-pyre/recipe.yaml
@@ -70,7 +52,6 @@ jobs:
           set -euo pipefail
           version="$(grep -E '^  version: "' community/recipes/mojo-pyre/recipe.yaml | cut -d'"' -f2)"
           channels="\"file://$PWD/community/output\""
-          [ -n "${EXTRA_CHANNEL:-}" ] && channels="$channels, \"$EXTRA_CHANNEL\""
           install_dir=$(mktemp -d)
           cat > "$install_dir/pixi.toml" <<TOML
           [workspace]

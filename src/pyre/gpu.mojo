@@ -9,7 +9,8 @@ from max.gpu.host import (
 from std.memory import unsafe_memcpy
 from std.bit import next_power_of_two
 from std.math import ceildiv, inf
-from std.sys import size_of, has_apple_gpu_accelerator
+from std.sys import size_of
+from std.sys.info import default_accelerator
 from std.time import perf_counter_ns
 from numojo import NDArray
 from numojo.core.type_aliases import Shape
@@ -44,7 +45,7 @@ comptime _FP64_ERROR = (
 
 def _has_fp64() -> Bool:
     """Whether the compiled GPU target can run float64 kernels."""
-    return not has_apple_gpu_accelerator()
+    return not default_accelerator().is_apple_gpu()
 
 
 @fieldwise_init

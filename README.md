@@ -23,7 +23,7 @@ The locked environment provides Mojo **1.2.0**, MAX core **26.7.0**, and NuMojo
 ```sh
 git clone https://github.com/idlab-discover/pyre.git
 cd pyre
-git checkout v0.1.0
+git checkout v0.2.0
 pixi install --locked
 pixi run run
 ```
@@ -77,26 +77,91 @@ See the [user guide](docs/usage.md) and [GPU example](examples/predict_gpu.mojo)
 
 ## Performance snapshot
 
-Across 41 trained regression models and five batch sizes, Pyre achieved these
-geometric-mean speedups against nvForest's default chunk setting:
+### Current CPU measurements
 
-| Execution | Pyre speedup | Faster cases |
-| --- | ---: | ---: |
-| CPU, 1 thread | **2.49×** | 182 / 205 |
-| CPU, 8 threads | **2.07×** | 189 / 205 |
-| GPU | **1.71×** | 195 / 205 |
+Ryzen 9 5950X, **16 requested threads**, measured November 9, 2026 on Pyre revision
+`d5fbe35` with Mojo 1.2. The corpus contains 17 trained numerical regressors,
+256 or 1,024 trees, depth limits 8 or 10, and 32 features. Every tree has splits.
+Each cell uses **five fresh processes × three calibrated intervals**, with
+whole-output GTIL checks before timing.
 
-Pyre also beat the original scikit-learn and LightGBM predictors in every measured
-CPU case. Measurements used a Ryzen 9 5950X and RTX 5090, resident inputs,
-allocating completed calls, and five independent processes. Pyre's native Mojo
-API is compared with Python APIs; these are application-call timings, not isolated
-kernel comparisons. Against the best measured nvForest chunk per case, aggregate
-speedups were **2.43× / 1.59× / 1.05×**, respectively.
-[Methodology and limitations](docs/benchmarks/comparison-0.1.0.md).
+![Current CPU comparisons on larger forests](docs/benchmarks/cpu-20261109/cpu-comparison.svg)
 
-Future work will optimize larger batches and larger forests, including parallel
-execution of compact symmetric CPU trees. Saturation testing across thread counts,
-concurrent callers, and diverse hardware will guide more scalable default strategies.
+Speed factor = reference latency / Pyre latency. Above 1 favors Pyre. These
+geometric means use **262,144-row batches**; each native row covers its own
+tree family, while nvForest covers all 17 models.
+
+| Reference | Pyre speed factor |
+| --- | ---: |
+| nvForest default chunk | 6.59× |
+| nvForest best probed chunk | 6.58× |
+| scikit-learn random forest | 3.37× |
+| XGBoost depthwise | 1.56× |
+| XGBoost lossguide | 1.76× |
+| CatBoost symmetric | 1.00× |
+| LightGBM leafwise | 4.18× |
+
+CatBoost is effectively tied in aggregate at this batch size; individual models
+differ. Calls include output allocation and completed inference. Reusable input
+preparation is excluded on both sides: CatBoost uses a prepared Pool, scikit-learn
+uses float32 input, and XGBoost uses `inplace_predict`. Pyre uses native Mojo calls;
+references use Python APIs. nvForest probes automatic, 8 and 32 chunks in depth-first layout.
+
+Observed **Pyre throughput in million full-forest predictions/s**, 262,144 rows,
+16 threads. Columns are tree count / depth cap; model shapes differ by family.
+
+| Family / precision | 256 / 8 | 256 / 10 | 1,024 / 8 | 1,024 / 10 |
+| --- | ---: | ---: | ---: | ---: |
+| scikit-learn random forest / f64 | 3.87 | 2.99 | 1.06 | Excluded |
+| XGBoost depthwise / f32 | 5.43 | 5.16 | 1.60 | Excluded |
+| XGBoost lossguide / f32 | 6.19 | 5.21 | 1.70 | 1.35 |
+| CatBoost symmetric / f64 | 26.77 | 19.65 | 7.41 | Excluded |
+| LightGBM leafwise / f64 | 3.88 | 3.24 | 1.07 | 0.92 |
+
+Excluded combinations exceed the conservative expanded-node budget. The single-thread comparison used 256 trees, depth 8 and 65,536 rows.
+Native CatBoost was 1.50× faster than Pyre in that configuration.
+
+GPU comparisons use the same runner with `--matrix benchmarks/gpu-heavy.json`.
+The GPU preset reaches 4,096 trees and 4,194,304 inference rows, subject to the
+loader's node budget. See the [GPU setup and smoke test](docs/comparison-matrix.md#gpu-comparisons)
+for resident Pyre/nvForest comparisons and optional native XGBoost CUDA prediction.
+
+[Run your own comparison](docs/comparison-matrix.md) with `--libraries xgboost catboost lightgbm scikit-learn nvforest`,
+or select a subset. The runner rebuilds Pyre from the current checkout, reuses a
+hashed corpus, and generates CSV tables and SVG/PNG charts. Batch sizes, tree
+counts, depth limits, threads and repetitions are configurable. September results
+use a different corpus and should not be divided into these numbers to claim a
+before/after implementation speedup.
+
+### GPU measurements
+
+**Latest GPU screen, November 9.** Resident input and reused output, 65,536 rows,
+32 features and float32 unless specified. These are single-process exploratory
+medians before the Mojo 1.2 toolchain port, not the five-process release protocol.
+
+| Forest | Pyre default / tuned µs | Tuned speed factor vs nvForest best | Tuned M rows/s |
+| --- | ---: | ---: | ---: |
+| 1 tree, depth 6 | 11.9 / 9.4 | 2.05× | 6,972 |
+| 64 trees, depth 6 | 24.5 / 24.5 | 1.82× | 2,675 |
+| 256 trees, depth 6 | 82.9 / 79.3 | 2.29× | 826 |
+| 1,024 trees, depth 6 | 286.4 / 287.9 | 2.31× | 228 |
+| 64 trees, depth 10 | 61.2 / 45.0 | 2.01× | 1,456 |
+| CatBoost 64 trees, depth 6, float64 | 40.5 / 39.6 | 2.96× | 1,655 |
+
+M rows/s counts complete forest predictions in millions per second. Tuning cost
+is excluded, and desktop drift reached about 10%; the default/tuned difference
+for 1,024 trees is within that variation. The nvForest probe tries both layouts
+and four chunk settings. [GPU experiment details](docs/benchmarks/gpu-kernel.md).
+
+For capacity planning, the larger 262,144-row screen reached about **264 M rows/s**
+for 1,024 depth-6 trees and **1,680 M rows/s** for 64 depth-10 trees with resident
+GPU input. Host-to-host pipelined rates were about **109–118 M rows/s** for
+64–1,024 depth-6 trees with 32 float32 features, and **7 M rows/s** at 512 features.
+Those host rates use best-of-seven timings. Transfers dominate these workloads.
+
+GPU rates remain exploratory; saturation is unproven. The CPU and GPU sections
+use different corpora and timing contracts, so compare engines within each
+section rather than deriving a CPU/GPU speed factor between them.
 
 ## License
 

@@ -50,8 +50,7 @@ pyperf = ">=2.9,<3"
 rattler-build = "==0.76.1"
 
 [feature.packaging.tasks]
-# PYRE_EXTRA_CHANNEL supplies Balsa until it is available from modular-community.
-conda-build = "rattler-build build --recipe conda.recipe/recipe.yaml --output-dir build/conda -c https://conda.modular.com/max -c conda-forge -c https://repo.prefix.dev/modular-community $PYRE_EXTRA_CHANNEL"
+conda-build = "rattler-build build --recipe conda.recipe/recipe.yaml --output-dir build/conda -c https://conda.modular.com/max -c conda-forge -c https://repo.prefix.dev/modular-community"
 
 [environments]
 default = { features = [], solve-group = "default" }

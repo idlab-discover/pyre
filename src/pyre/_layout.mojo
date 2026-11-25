@@ -15,7 +15,7 @@ of IEEE values, for GPU integer comparison; leaves always hold values.
 """
 from balsa import Model, NodeType, Operator
 from std.math import inf, nextafter
-from std.sys import has_apple_gpu_accelerator
+from std.sys.info import default_accelerator
 from std.memory import bitcast
 
 comptime OP_LT = UInt32(0)
@@ -163,7 +163,7 @@ def pack[
             var at = words * position
             comptime if dtype == DType.float32:
                 nodes[unsafe_offset=at] = bitcast[DType.uint32, 1](value)
-                comptime if keyed and has_apple_gpu_accelerator():
+                comptime if keyed and default_accelerator().is_apple_gpu():
                     if tree.node_type[n] != NodeType.LEAF:
                         nodes[unsafe_offset=at] = bitcast[DType.uint32, 1](order_key(value))
                 if words == 4:

@@ -1,0 +1,7 @@
+# Shared preparation/reporting dependencies. Install the selected trainers separately.
+numpy==2.5.3
+treelite==4.6.1
+pyarrow==25.0.1
+pandas==3.0.6
+matplotlib==3.11.2
+threadpoolctl==3.7.0

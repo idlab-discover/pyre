@@ -1,4 +1,5 @@
 """Untimed binary exchange with Python; values retain their exact bit patterns."""
+from balsa import Limits
 from balsa.codec import read_file
 from numojo import NDArray
 from numojo.core.type_aliases import Shape
@@ -8,8 +9,9 @@ from std.sys import size_of
 def samples[
     dtype: DType
 ](path: String, rows: Int, features: Int) raises -> NDArray[dtype]:
-    var bytes = read_file(path)
-    if len(bytes) != rows * features * size_of[Scalar[dtype]]():
+    var expected_bytes = rows * features * size_of[Scalar[dtype]]()
+    var bytes = read_file(path, Limits(max_bytes=max(1, expected_bytes)))
+    if len(bytes) != expected_bytes:
         raise Error("Input byte count does not match shape and precision")
     var x = NDArray[dtype](Shape(rows, features))
     var source = bytes.unsafe_ptr().unsafe_bitcast[Scalar[dtype]]()

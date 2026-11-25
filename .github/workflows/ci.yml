@@ -64,18 +64,6 @@ jobs:
         run: pixi run --locked test-python
       - name: Packaged consumer outside the source tree
         run: pixi run --locked test-consumer
-      # Until Balsa is published to modular-community, build the pinned
-      # revision's own recipe into a local channel.
-      - name: Build pinned Balsa package
-        shell: bash
-        run: |
-          set -euo pipefail
-          commit="$(python3 -c 'import ast,pathlib; t=ast.parse(pathlib.Path("tools/prepare_balsa.py").read_text()); print(next(n.value.value for n in t.body if isinstance(n, ast.Assign) and n.targets[0].id == "COMMIT"))')"
-          git init -q "$RUNNER_TEMP/balsa"
-          git -C "$RUNNER_TEMP/balsa" fetch -q --depth=1 https://github.com/idlab-discover/balsa.git "$commit"
-          git -C "$RUNNER_TEMP/balsa" checkout -q FETCH_HEAD
-          pixi run --manifest-path "$RUNNER_TEMP/balsa/pixi.toml" --locked -e packaging conda-build
-          echo "PYRE_EXTRA_CHANNEL=-c file://$RUNNER_TEMP/balsa/build/conda" >> "$GITHUB_ENV"
       - name: Build Conda package and test an isolated installation
         run: pixi run --locked -e packaging conda-build
       - name: Record package checksums and source revision

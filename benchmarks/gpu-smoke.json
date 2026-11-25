@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "purpose": "validation",
+  "seed": 20260926,
+  "families": [
+    "sklearn_random_forest",
+    "xgboost_depthwise",
+    "xgboost_lossguide",
+    "catboost_symmetric",
+    "lightgbm_leafwise"
+  ],
+  "tree_counts": [
+    4
+  ],
+  "depth_limits": [
+    3
+  ],
+  "batch_rows": [
+    1,
+    33,
+    4097
+  ],
+  "features": 8,
+  "training_rows": 256,
+  "max_model_nodes": 1000000,
+  "max_input_bytes": 268435456,
+  "devices": [
+    "gpu"
+  ],
+  "engines": [
+    "pyre",
+    "nvforest"
+  ],
+  "cpu_threads": [
+    1
+  ],
+  "nvforest_chunks": [
+    null,
+    8
+  ],
+  "pyre_gpu_row_groups": [
+    null,
+    8
+  ],
+  "processes": 1,
+  "samples": 2,
+  "min_seconds": 0.01,
+  "worker_timeout_seconds": 120,
+  "native_input": "prepared"
+}

@@ -1,0 +1,10 @@
+# Resident GPU references plus the shared corpus/reporting dependencies.
+-r requirements-cpu.txt
+nvforest-cu13==26.6.0
+cupy-cuda13x[ctk]==14.2.0
+# Use the CUDA-enabled distribution, never xgboost-cpu, in this environment.
+xgboost==3.4.1
+scikit-learn==1.9.1
+joblib==1.6.0
+catboost==1.2.10
+lightgbm==4.7.0

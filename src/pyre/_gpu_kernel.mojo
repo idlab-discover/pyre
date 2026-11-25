@@ -23,7 +23,7 @@ from max.gpu.memory import external_memory, AddressSpace
 from max.gpu.primitives import warp
 from std.math import isnan, exp
 from std.memory import bitcast
-from std.sys import has_apple_gpu_accelerator
+from std.sys.info import default_accelerator
 from std.bit import log2_floor
 
 from ._layout import (
@@ -70,7 +70,7 @@ def warp_sum[dtype: DType](value: Scalar[dtype]) -> Scalar[dtype]:
 
 def stage_type[dtype: DType]() -> DType:
     """Staged element type: float64 inputs are staged as comparison keys."""
-    return KeyType[dtype] if dtype == DType.float64 or has_apple_gpu_accelerator() else dtype
+    return KeyType[dtype] if dtype == DType.float64 or default_accelerator().is_apple_gpu() else dtype
 
 
 @always_inline

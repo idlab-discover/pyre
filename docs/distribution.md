@@ -50,15 +50,6 @@ pixi run --locked test-gpu   # on a supported GPU host
 pixi run --locked -e packaging conda-build
 ```
 
-Until Balsa 0.2.1 is available from modular-community, build its package first
-and pass it as an extra channel:
-
-```sh
-(cd ../balsa && pixi run --locked -e packaging conda-build)
-PYRE_EXTRA_CHANNEL="-c file://$(realpath ../balsa/build/conda)" \
-  pixi run --locked -e packaging conda-build
-```
-
 Source builds run `tools/prepare_balsa.py`, which fetches the pinned Balsa
 revision into `build/balsa-reference`, the same revision the `balsa ==0.2.1`
 package is built from. For offline preparation, pass
@@ -87,8 +78,7 @@ name/version/build is skipped, not rebuilt.
 
 ## Release sequence
 
-1. Balsa first: `mojo-pyre` resolves `balsa` from the live community channel,
-   so Balsa's recipe must be merged and uploaded before Pyre's PR can build.
+1. Verify the pinned Balsa release is available from the community channel.
 2. Merge the release commit to `main` after both GitHub CI jobs pass. The
    workspace and recipe versions must equal the release version, with build 0.
    `tools/prepare_balsa.py` must pin the commit of Balsa's release tag.
@@ -102,8 +92,7 @@ name/version/build is skipped, not rebuilt.
 5. Add `recipes/mojo-pyre/recipe.yaml` in a fork of `modular/modular-community`.
    Replace `source.path`/`source.filter` with the Git repository and the tag's
    full commit as `rev`. Run the **Validate community recipe** workflow (manual
-   dispatch) with the fork and commit. Fill in `balsa-ref` only while Balsa is
-   not yet published. The workflow builds the exact recipe with upstream's
+   dispatch) with the fork and commit. The workflow builds the exact recipe with upstream's
    Rattler-Build version, variants and channel order and installs it into a
    clean workspace. Then open the PR with the upstream checklist. The package
    reaches `modular-community` only after a maintainer merges it and the upload
@@ -115,9 +104,7 @@ Do not move an existing release tag.
 
 CI runs on branch pushes, pull requests and manual dispatch. CPU tests run on
 Ubuntu in three groups. The package job builds the example, runs the Python
-tooling tests and the packaged consumer, and builds the Conda package. Until
-Balsa is published, it first builds the pinned Balsa revision's own recipe into
-a local channel. It uploads the Conda artifact with SHA256 checksums and the
+tooling tests and the packaged consumer, and builds the Conda package. It resolves Balsa 0.2.1 from modular-community. It uploads the Conda artifact with SHA256 checksums and the
 exact checkout commit. Actions are pinned and environments locked, and the
 repository permission is read-only. GPU execution is checked locally on a
 supported GPU; hosted CI makes no GPU-validation claim.

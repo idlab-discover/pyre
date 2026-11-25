@@ -11,7 +11,7 @@ imported as `pyre`.
 | Library version | Mojo compiler | MAX core | NuMojo | Balsa | Distribution |
 |---|---|---|---|---|---|
 | 0.1.0 | 1.0.0 | 26.5.0 | 0.10.0 | `737874f` (bundled) | GitHub tarball |
-| 0.2.0 build 0 | 1.2.0 | 26.7.0 | 0.12.0 | 0.2.1 (package) | modular-community (pending review) |
+| 0.2.0 build 0 | 1.2.0 | 26.7.0 | 0.12.0 | 0.2.1 (package) | GitHub release asset |
 
 The 0.1.0 tarball bundled a Balsa build. From 0.2.0 on, Balsa is an ordinary
 package dependency, and the tarball and `pixi run release` are gone. Each
@@ -32,6 +32,7 @@ increment is reserved for recipe-only rebuilds of the same source.
   on real rows, and `use_plan` pins one. NDArray inputs pipeline uploads,
   compute and downloads across copy streams. Measurements are in
   [GPU kernel results](benchmarks/gpu-kernel.md).
+- **Benchmarking.** The CPU and GPU comparison runner checks predictions against GTIL and supports configurable model families, batch sizes and worker settings.
 - **Mojo 1.2.0.** GPU primitives and the async runtime moved under `max.*`,
   `InlineArray` became `Array`, and `parallelism_level` takes an optional
   device context. The CPU executor uses a host-target device context, so
@@ -52,6 +53,6 @@ increment is reserved for recipe-only rebuilds of the same source.
 
 The CPU suites pass, along with the CPU-only build, Python tooling tests and the
 packaged consumer outside the source tree. The GPU transfer and inference
-suites (18 tests) pass on an RTX 5090. The Conda package passes its isolated
+suites pass on an RTX 5090. The Conda package passes its isolated
 installation test, which compiles a CPU-only consumer with no source include
 path. It also builds with modular-community's rattler-build 0.30.
